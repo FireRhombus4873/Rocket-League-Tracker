@@ -1,0 +1,129 @@
+"""
+Rocket League Tracker
+---------------------
+Connects to the Rocket League Stats API, tracks player info per match,
+records wins/losses, and stores opponent history across sessions.
+
+Requirements:
+    pip install PyQt6 psutil
+
+Stats API runs on localhost:49123 when Rocket League is open.
+"""
+
+import sys
+import threading
+from PyQt6.QtWidgets import QApplication, QMessageBox
+
+from mainWindow     import MainWindow
+from eventHandler   import EventHandler
+from socketHandler  import SocketHandler
+from processHandler import ProcessHandler
+from sessionStore   import SessionStore
+
+LOCAL_USERNAME = "FireRhombus4873"
+
+
+def main():
+    app = QApplication(sys.argv)
+
+    window          = MainWindow()
+    session         = SessionStore()
+    event_handler   = EventHandler(on_event_callback=lambda evt: handle_event(evt))
+    process_handler = ProcessHandler()
+
+    window.show()
+
+    _refresh_history(window, session)
+    _refresh_record(window, session)
+
+    def handle_update_state(data: dict):
+        fresh = session.try_set_players_from_update(data, local_username=LOCAL_USERNAME)
+        if fresh:
+            window.signals.players_updated.emit(
+                session.current_players, session.team_info
+            )
+            window.signals.status_changed.emit("Match in progress")
+
+    def handle_event(event: dict):
+        if "MatchInitialised" in event:
+            window.signals.status_changed.emit("Match initialising...")
+
+        elif "MatchEnded" in event:
+            winner = event.get("MatchEnded")
+            try:
+                winner_int = int(winner)
+            except (ValueError, TypeError):
+                winner_int = -1
+            session.record_result(winner_int)
+            _refresh_record(window, session)
+            _refresh_history(window, session)
+            window.signals.players_updated.emit([], {})
+            window.signals.status_changed.emit("Match ended — waiting for next match")
+
+        elif "MatchDestroyed" in event:
+            window.signals.players_updated.emit([], {})
+            window.signals.status_changed.emit("Connected — waiting for match")
+
+    socket_handler = SocketHandler(
+        on_message_callback=event_handler.dispatch,
+        on_update_state_callback=handle_update_state,
+    )
+
+    def prompt_session(last_num: int):
+        """
+        Ask the user whether to continue the previous session or start a new one.
+        Runs on the main thread via a signal so it's safe to show a dialog.
+        """
+        if last_num == 0:
+            # First ever launch — no choice needed
+            session.new_session()
+            return
+
+        msg = QMessageBox()
+        msg.setWindowTitle("Session")
+        msg.setText(
+            f"Continue session {last_num}?\n\n"
+            "Choose 'Continue' if Rocket League crashed or you closed it by mistake.\n"
+            "Choose 'New Session' to start fresh."
+        )
+        msg.addButton("Continue", QMessageBox.ButtonRole.AcceptRole)
+        new_btn = msg.addButton("New Session", QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+
+        if msg.clickedButton() == new_btn:
+            session.new_session()
+        else:
+            session.continue_session()
+        _refresh_record(window, session)
+
+    def process_watcher():
+        while True:
+            window.signals.status_changed.emit("Waiting for Rocket League...")
+            process_handler.wait_for_game()
+
+            # Ask on main thread (Qt requires UI calls on main thread)
+            window.signals.session_prompt.emit(session.session_num)
+
+            window.signals.status_changed.emit("Rocket League detected — connecting...")
+            socket_handler.start()
+
+            process_handler.wait_for_game_to_close()
+            socket_handler.stop()
+            window.signals.status_changed.emit("Rocket League closed")
+
+    # Wire the session prompt signal to our handler
+    window.signals.session_prompt.connect(prompt_session)
+
+    threading.Thread(target=process_watcher, daemon=True).start()
+    sys.exit(app.exec())
+
+
+def _refresh_record(window: MainWindow, session: SessionStore):
+    window.signals.record_updated.emit(session.wins, session.losses)
+
+def _refresh_history(window: MainWindow, session: SessionStore):
+    window.signals.history_updated.emit(session.get_recent_opponents(20))
+
+
+if __name__ == "__main__":
+    main()
