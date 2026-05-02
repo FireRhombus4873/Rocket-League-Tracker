@@ -12,11 +12,12 @@ from PyQt6.QtGui import QFont, QColor, QIcon
 # Signal bridge: lets background threads safely update the Qt UI
 # --------------------------------------------------------------------------
 class UISignals(QObject):
-    players_updated  = pyqtSignal(list, dict)    # list of player dicts, team_info dict
-    record_updated   = pyqtSignal(int, int)       # wins, losses
-    history_updated  = pyqtSignal(list)           # list of match history dicts
-    status_changed   = pyqtSignal(str)            # status bar text
-    session_prompt   = pyqtSignal(int)            # last session number, triggers dialog
+    players_updated      = pyqtSignal(list, dict)  # list of player dicts, team_info dict
+    record_updated       = pyqtSignal(int, int)    # wins, losses
+    history_updated      = pyqtSignal(list, int)   # list of match history dicts, current session num
+    status_changed       = pyqtSignal(str)         # status bar text
+    session_prompt       = pyqtSignal(int)         # last session number, triggers dialog
+    new_session_requested = pyqtSignal()           # user clicked "New Session"
 
 # --------------------------------------------------------------------------
 # Colour palette
@@ -295,6 +296,32 @@ class MainWindow(QMainWindow):
         record_row.addWidget(self._ratio_card)
         record_row.addWidget(self._streak_card)
         record_row.addStretch()
+
+        self._new_session_btn = QPushButton("＋  NEW SESSION")
+        self._new_session_btn.setFixedHeight(40)
+        self._new_session_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {BG_CARD};
+                color: {ACCENT2};
+                border: 1px solid {ACCENT2};
+                border-radius: 6px;
+                padding: 0 16px;
+                font-family: "Courier New";
+                font-size: 11px;
+                font-weight: bold;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{
+                background-color: #0d2030;
+                border-color: {TEXT};
+                color: {TEXT};
+            }}
+            QPushButton:pressed {{ background-color: #0a1820; }}
+        """)
+        self._new_session_btn.clicked.connect(
+            lambda: self.signals.new_session_requested.emit()
+        )
+        record_row.addWidget(self._new_session_btn)
         root.addLayout(record_row)
 
         # ── Middle split: current players | history ──────────────────────
@@ -405,10 +432,10 @@ class MainWindow(QMainWindow):
             dlg = MatchStatsDialog(self._history_entries[row], parent=self)
             dlg.exec()
 
-    def _on_history_updated(self, history: list):
+    def _on_history_updated(self, history: list, session_num: int):
         """history is a list of match entry dicts, most recent first."""
         self._history_entries = list(history)
-        self._update_streak(history)
+        self._update_streak(history, session_num)
         t = self._history_table
         t.setRowCount(0)
         for entry in history:
@@ -449,11 +476,10 @@ class MainWindow(QMainWindow):
             t.setItem(row, 3, opp_item)
             t.setItem(row, 4, team_item)
 
-    def _update_streak(self, history: list):
+    def _update_streak(self, history: list, session_num: int):
         streak = 0
-        if history:
-            current_session = history[0].get("sessionNum")
-            session_history = [e for e in history if e.get("sessionNum") == current_session]
+        session_history = [e for e in history if e.get("sessionNum") == session_num]
+        if session_history:
             anchor = session_history[0].get("result", "").upper()
             for entry in session_history:
                 result = entry.get("result", "").upper()

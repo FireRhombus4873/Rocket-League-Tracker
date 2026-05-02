@@ -111,8 +111,21 @@ def main():
             socket_handler.stop()
             window.signals.status_changed.emit("Rocket League closed")
 
+    def on_new_session_requested():
+        msg = QMessageBox()
+        msg.setWindowTitle("New Session")
+        msg.setText("Start a new session?\n\nThis will reset your wins, losses, and streak counter.")
+        msg.addButton("Start New Session", QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        if msg.clickedButton() != cancel_btn:
+            session.new_session()
+            _refresh_record(window, session)
+            _refresh_history(window, session)
+
     # Wire the session prompt signal to our handler
     window.signals.session_prompt.connect(prompt_session)
+    window.signals.new_session_requested.connect(on_new_session_requested)
 
     threading.Thread(target=process_watcher, daemon=True).start()
     sys.exit(app.exec())
@@ -122,7 +135,7 @@ def _refresh_record(window: MainWindow, session: SessionStore):
     window.signals.record_updated.emit(session.wins, session.losses)
 
 def _refresh_history(window: MainWindow, session: SessionStore):
-    window.signals.history_updated.emit(session.get_recent_opponents(20))
+    window.signals.history_updated.emit(session.get_recent_opponents(20), session.session_num)
 
 
 if __name__ == "__main__":
