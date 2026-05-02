@@ -245,6 +245,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _on_players_updated(self, players: list, team_info: dict):
         t = self._players_table
+        players = sorted(players, key=players['team'])
         t.setRowCount(0)
         for p in players:
             row = t.rowCount()
