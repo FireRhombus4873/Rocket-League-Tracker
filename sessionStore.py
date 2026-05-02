@@ -196,8 +196,10 @@ class SessionStore():
             "date":       datetime.now().isoformat(timespec="seconds"),
             "result":     "win" if won else "loss",
             "sessionNum": self.session_num,
-            "opponents":  [_player_entry(p) for p in self.current_opponents],
-            "teammates":  [_player_entry(p) for p in self.current_teammates],
+            "opponents":  [_player_entry(p) for p in self.current_opponents
+                           if p.get("platform") != "Unknown"],
+            "teammates":  [_player_entry(p) for p in self.current_teammates
+                           if p.get("platform") != "Unknown"],
         }
         self.match_history.append(entry)
         self._save_history()
