@@ -3,7 +3,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
-    QFrame, QSizePolicy
+    QFrame, QSizePolicy, QDialog, QPushButton
 )
 from PyQt6.QtCore import pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor, QIcon
@@ -70,6 +70,125 @@ class Card(QFrame):
         layout.addLayout(self.content_layout)
 
 # --------------------------------------------------------------------------
+# Match Stats Dialog
+# --------------------------------------------------------------------------
+class MatchStatsDialog(QDialog):
+    def __init__(self, entry: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Match Stats")
+        self.setMinimumSize(1000, 420)
+        self.setStyleSheet(f"""
+            QDialog, QWidget {{
+                background-color: {BG_DARK};
+                color: {TEXT};
+                font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+                font-size: 13px;
+            }}
+            QTableWidget {{
+                background-color: {BG_TABLE};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                gridline-color: {BORDER};
+                color: {TEXT};
+            }}
+            QTableWidget::item {{ padding: 6px 10px; }}
+            QTableWidget::item:selected {{ background-color: #264f78; }}
+            QHeaderView::section {{
+                background-color: {BG_CARD};
+                color: {SUBTEXT};
+                border: none;
+                border-bottom: 1px solid {BORDER};
+                padding: 6px 10px;
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }}
+            QPushButton {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 6px 18px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{ background-color: #21262d; }}
+        """)
+
+        result  = entry.get("result", "?").upper()
+        date    = entry.get("date", "")[:10]
+        session = entry.get("sessionNum", "?")
+        result_colour = WIN_CLR if result == "WIN" else LOSS_CLR
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(14)
+
+        # ── Header ──────────────────────────────────────────────────────
+        header = QHBoxLayout()
+        title_lbl = QLabel(f"SESSION {session}  ·  {date}")
+        title_lbl.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
+        title_lbl.setStyleSheet(f"color: {ACCENT2};")
+        result_lbl = QLabel(result)
+        result_lbl.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
+        result_lbl.setStyleSheet(f"color: {result_colour};")
+        header.addWidget(title_lbl)
+        header.addStretch()
+        header.addWidget(result_lbl)
+        layout.addLayout(header)
+
+        # ── Players table ────────────────────────────────────────────────
+        cols = ["Name", "Platform", "Side", "Score", "Goals", "Shots",
+                "Assists", "Saves", "Touches", "Car Touches", "Demos"]
+        table = QTableWidget(0, len(cols))
+        table.setHorizontalHeaderLabels(cols)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.setStyleSheet(table.styleSheet() + f"QTableWidget {{ alternate-background-color: #1a2030; }}")
+
+        def add_player(player: dict, side: str, side_colour: str):
+            row = table.rowCount()
+            table.insertRow(row)
+            plat = player.get("platform", "Unknown")
+            values = [
+                (player.get("name", "?"),              TEXT),
+                (f"{platform_icon(plat)}  {plat.capitalize()}", SUBTEXT),
+                (side,                                  side_colour),
+                (str(player.get("score",      0)),     TEXT),
+                (str(player.get("goals",      0)),     TEXT),
+                (str(player.get("shots",      0)),     TEXT),
+                (str(player.get("assists",    0)),     TEXT),
+                (str(player.get("saves",      0)),     TEXT),
+                (str(player.get("touches",    0)),     TEXT),
+                (str(player.get("carTouches", 0)),     TEXT),
+                (str(player.get("demos",      0)),     TEXT),
+            ]
+            for col, (text, colour) in enumerate(values):
+                item = QTableWidgetItem(text)
+                item.setForeground(QColor(colour))
+                table.setItem(row, col, item)
+
+        for p in entry.get("teammates", []):
+            add_player(p, "Teammate", ACCENT2)
+        for p in entry.get("opponents", []):
+            add_player(p, "Opponent", ACCENT)
+
+        layout.addWidget(table)
+
+        # ── Close button ─────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+
+# --------------------------------------------------------------------------
 # Main Window
 # --------------------------------------------------------------------------
 class MainWindow(QMainWindow):
@@ -87,6 +206,9 @@ class MainWindow(QMainWindow):
         self.signals.record_updated.connect(self._on_record_updated)
         self.signals.history_updated.connect(self._on_history_updated)
         self.signals.status_changed.connect(self._on_status_changed)
+
+        self._history_entries: list = []
+        self._history_table.itemClicked.connect(self._on_history_row_clicked)
 
     # ------------------------------------------------------------------
     # Style
@@ -277,8 +399,15 @@ class MainWindow(QMainWindow):
         ratio = f"{wins/total:.0%}" if total > 0 else "—"
         self._ratio_card._value_label.setText(ratio)
 
+    def _on_history_row_clicked(self, item):
+        row = item.row()
+        if row < len(self._history_entries):
+            dlg = MatchStatsDialog(self._history_entries[row], parent=self)
+            dlg.exec()
+
     def _on_history_updated(self, history: list):
         """history is a list of match entry dicts, most recent first."""
+        self._history_entries = list(history)
         self._update_streak(history)
         t = self._history_table
         t.setRowCount(0)
