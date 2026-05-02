@@ -1,10 +1,12 @@
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
     QFrame, QSizePolicy
 )
 from PyQt6.QtCore import pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QIcon
 
 # --------------------------------------------------------------------------
 # Signal bridge: lets background threads safely update the Qt UI
@@ -75,6 +77,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Rocket League Tracker")
         self.setMinimumSize(1000, 750)
+        self.setWindowIcon(QIcon(str(Path(__file__).parent / "assets" / "RocketLeagueTracker.ico")))
         self._apply_styles()
         self._build_ui()
 
