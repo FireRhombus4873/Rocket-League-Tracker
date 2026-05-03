@@ -227,7 +227,7 @@ class SessionStore():
         try:
             HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(HISTORY_FILE, "w") as f:
-                json.dump(self.match_history, f, indent=2)
+                json.dump(self.match_history, f)
         except IOError as e:
             print(f"Could not save match history: {e}")
 
