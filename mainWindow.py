@@ -3,10 +3,11 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
-    QFrame, QSizePolicy, QDialog, QPushButton
+    QFrame, QSizePolicy, QDialog, QPushButton,
+    QSystemTrayIcon, QMenu
 )
 from PyQt6.QtCore import pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QColor, QIcon
+from PyQt6.QtGui import QFont, QColor, QIcon, QAction
 
 # --------------------------------------------------------------------------
 # Signal bridge: lets background threads safely update the Qt UI
@@ -18,6 +19,7 @@ class UISignals(QObject):
     status_changed       = pyqtSignal(str)         # status bar text
     session_prompt       = pyqtSignal(int)         # last session number, triggers dialog
     new_session_requested = pyqtSignal()           # user clicked "New Session"
+    game_started         = pyqtSignal()            # Rocket League process detected
 
 # --------------------------------------------------------------------------
 # Colour palette
@@ -207,9 +209,58 @@ class MainWindow(QMainWindow):
         self.signals.record_updated.connect(self._on_record_updated)
         self.signals.history_updated.connect(self._on_history_updated)
         self.signals.status_changed.connect(self._on_status_changed)
+        self.signals.game_started.connect(self._on_game_started)
 
         self._history_entries: list = []
         self._history_table.itemClicked.connect(self._on_history_row_clicked)
+
+        self._setup_tray()
+
+    # ------------------------------------------------------------------
+    # System tray
+    # ------------------------------------------------------------------
+    def _setup_tray(self):
+        icon = QIcon(str(Path(__file__).parent / "assets" / "RocketLeagueTracker.ico"))
+        self._tray = QSystemTrayIcon(icon, parent=self)
+        self._tray.setToolTip("Rocket League Tracker")
+
+        menu = QMenu()
+        show_action = QAction("Show", self)
+        quit_action = QAction("Quit", self)
+        show_action.triggered.connect(self._show_from_tray)
+        quit_action.triggered.connect(self._quit_app)
+        menu.addAction(show_action)
+        menu.addSeparator()
+        menu.addAction(quit_action)
+        self._tray.setContextMenu(menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
+
+    def _show_from_tray(self):
+        self.showNormal()
+        self.activateWindow()
+
+    def _quit_app(self):
+        self._tray.hide()
+        import sys
+        sys.exit(0)
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._show_from_tray()
+
+    def _on_game_started(self):
+        self._show_from_tray()
+
+    def closeEvent(self, event):
+        event.ignore()
+        self.hide()
+        self._tray.showMessage(
+            "Rocket League Tracker",
+            "Still running in the background. Will reappear when Rocket League starts.",
+            QSystemTrayIcon.MessageIcon.Information,
+            3000,
+        )
 
     # ------------------------------------------------------------------
     # Style

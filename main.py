@@ -31,8 +31,6 @@ def main():
     event_handler   = EventHandler(on_event_callback=lambda evt: handle_event(evt))
     process_handler = ProcessHandler()
 
-    window.show()
-
     _refresh_history(window, session)
     _refresh_record(window, session)
 
@@ -101,6 +99,7 @@ def main():
             window.signals.status_changed.emit("Waiting for Rocket League...")
             process_handler.wait_for_game()
 
+            window.signals.game_started.emit()
             # Ask on main thread (Qt requires UI calls on main thread)
             window.signals.session_prompt.emit(session.session_num)
 
