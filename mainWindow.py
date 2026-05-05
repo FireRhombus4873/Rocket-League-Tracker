@@ -381,8 +381,14 @@ class MainWindow(QMainWindow):
 
         # Current match players
         players_card = Card("Current Match — Players")
-        self._players_table = self._make_table(["Name", "Platform", "Team"])
-        players_card.content_layout.addWidget(self._players_table)
+        self._players_container = QWidget()
+        self._players_container.setStyleSheet(f"background-color:{BG_CARD}")
+        self._players_layout = QVBoxLayout(self._players_container)
+        self._players_layout.setContentsMargins(0, 0, 0, 0)
+        self._players_layout.setSpacing(12)
+        self._players_layout.addStretch()
+        players_card.content_layout.addWidget(self._players_container)
+        players_card.content_layout.addStretch()
         players_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         middle.addWidget(players_card, stretch=3)
 
@@ -444,31 +450,70 @@ class MainWindow(QMainWindow):
     # Slot handlers (called on main thread via signals)
     # ------------------------------------------------------------------
     def _on_players_updated(self, players: list, team_info: dict):
-        t = self._players_table
-        players = sorted(players, key=lambda p: p['team'])
-        t.setRowCount(0)
-        for p in players:
-            row = t.rowCount()
-            t.insertRow(row)
+        # Clear existing widgets in the players layout
+        while self._players_layout.count():
+            item = self._players_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
 
-            name_item = QTableWidgetItem(p.get("name", "Unknown"))
-            name_item.setForeground(QColor(TEXT))
+        # Group players by team
+        teams: dict = {}
+        for p in players:
+            teams.setdefault(p.get("team", -1), []).append(p)
+
+        for team_num in sorted(teams.keys()):
+            info        = team_info.get(team_num, {})
+            team_colour = info.get("color") or (ACCENT2 if team_num == 0 else ACCENT)
+            team_label  = info.get("name") or (f"Team {team_num + 1}" if team_num >= 0 else "Unassigned")
+
+            self._players_layout.addWidget(self._build_team_section(team_label, team_colour, teams[team_num]))
+
+        self._players_layout.addStretch()
+
+    def _build_team_section(self, team_label: str, team_colour: str, players: list) -> QWidget:
+        section = QWidget()
+        sec_layout = QVBoxLayout(section)
+        sec_layout.setContentsMargins(0, 0, 0, 0)
+        sec_layout.setSpacing(0)
+
+        header = QLabel(team_label.upper())
+        header.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+        header.setStyleSheet(
+            f"color: {team_colour}; "
+            f"background: transparent; "
+            f"border: none; "
+            f"border-bottom: 2px solid {team_colour}; "
+            f"padding: 4px 8px; "
+            f"letter-spacing: 2px;"
+        )
+        sec_layout.addWidget(header)
+
+        for idx, p in enumerate(players):
+            row = QWidget()
+            row.setStyleSheet(
+                f"background-color: {BG_TABLE if idx % 2 == 0 else '#1a2030'}; "
+                f"border: none;"
+            )
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(12, 6, 12, 6)
+            row_layout.setSpacing(8)
+
+            name_lbl = QLabel(p.get("name", "Unknown"))
+            name_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.DemiBold))
+            name_lbl.setStyleSheet(f"color: {TEXT}; background: transparent; border: none;")
 
             plat = p.get("platform", "Unknown")
-            plat_item = QTableWidgetItem(f"{platform_icon(plat)}  {plat.capitalize()}")
-            plat_item.setForeground(QColor(SUBTEXT))
+            plat_lbl = QLabel(f"{platform_icon(plat)}  {plat.capitalize()}")
+            plat_lbl.setStyleSheet(f"color: {SUBTEXT}; background: transparent; border: none;")
 
-            team_num = p.get("team", -1)
-            info     = team_info.get(team_num, {})
-            # Use the team's primary colour for the label; fall back to defaults
-            team_colour = info.get("color") or (ACCENT2 if team_num == 0 else ACCENT)
-            team_label  = info.get("name") or (f"Team {team_num + 1}" if team_num >= 0 else "—")
-            team_item   = QTableWidgetItem(team_label)
-            team_item.setForeground(QColor(team_colour))
+            row_layout.addWidget(name_lbl)
+            row_layout.addStretch()
+            row_layout.addWidget(plat_lbl)
 
-            t.setItem(row, 0, name_item)
-            t.setItem(row, 1, plat_item)
-            t.setItem(row, 2, team_item)
+            sec_layout.addWidget(row)
+
+        return section
 
     def _on_record_updated(self, wins: int, losses: int):
         self._wins_card._value_label.setText(str(wins))
