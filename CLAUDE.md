@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working on this project.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
@@ -63,6 +63,8 @@ This is the most complex file. It handles three intertwined concerns:
 
 History is persisted as JSON to `%LOCALAPPDATA%\FireRhombus\RocketLeagueTracker\match_history.json`.
 
+**Pause tracking**: when `MainWindow.is_tracking_paused()` is true, `main.py`'s `MatchEnded` handler calls `session.discard_match()` instead of `record_result()`. Players still display live during the match (the `UpdateState` flow is untouched), but no history entry is written and `wins`/`losses` stay put. The user toggles this via the checkbox next to "New Session".
+
 ### `processHandler.py` — process detection
 
 - `wait_for_game()` polls `psutil` every 2s for `RocketLeague.exe`
@@ -99,7 +101,7 @@ The interaction between `_player_registry`, `_seen_player_count`, and the "shoul
 2. Late joiner mid-match — should refresh UI
 3. Stats updating during play (no roster change) — should NOT refresh UI but MUST update stats
 4. Player leaves mid-match — should keep their stats in the registry
-5. Match ends — `record_result` snapshots current state, then registry is cleared
+5. Match ends — `record_result` snapshots current state and clears the registry; or, when tracking is paused, `discard_match` clears the registry without writing
 
 If a change breaks any of these, stats won't get recorded correctly — and silent data corruption is the worst kind of bug here.
 
