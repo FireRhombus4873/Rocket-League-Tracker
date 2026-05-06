@@ -210,6 +210,14 @@ class SessionStore():
         self._player_registry   = {}
         self._seen_player_count = 0
 
+    def discard_match(self):
+        """Reset per-match state without writing to history or touching wins/losses."""
+        self.current_opponents  = []
+        self.current_teammates  = []
+        self.current_players    = []
+        self._player_registry   = {}
+        self._seen_player_count = 0
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------

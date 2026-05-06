@@ -52,11 +52,16 @@ def main():
                 winner_int = int(winner)
             except (ValueError, TypeError):
                 winner_int = -1
-            session.record_result(winner_int)
-            _refresh_record(window, session)
-            _refresh_history(window, session)
-            window.signals.players_updated.emit([], {})
-            window.signals.status_changed.emit("Match ended — waiting for next match")
+            if window.is_tracking_paused():
+                session.discard_match()
+                window.signals.players_updated.emit([], {})
+                window.signals.status_changed.emit("Match ended — tracking paused (not saved)")
+            else:
+                session.record_result(winner_int)
+                _refresh_record(window, session)
+                _refresh_history(window, session)
+                window.signals.players_updated.emit([], {})
+                window.signals.status_changed.emit("Match ended — waiting for next match")
 
         elif "MatchDestroyed" in event:
             window.signals.players_updated.emit([], {})

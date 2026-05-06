@@ -3,7 +3,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
-    QFrame, QSizePolicy, QDialog, QPushButton,
+    QFrame, QSizePolicy, QDialog, QPushButton, QCheckBox,
     QSystemTrayIcon, QMenu
 )
 from PyQt6.QtCore import pyqtSignal, QObject
@@ -373,6 +373,51 @@ class MainWindow(QMainWindow):
             lambda: self.signals.new_session_requested.emit()
         )
         record_row.addWidget(self._new_session_btn)
+
+        self._pause_tracking_cb = QCheckBox("PAUSE TRACKING")
+        self._pause_tracking_cb.setFixedHeight(40)
+        self._pause_tracking_cb.setToolTip(
+            "When enabled, finished matches are not saved to history.\n"
+            "Players still appear in the Current Match panel."
+        )
+        self._pause_tracking_cb.setStyleSheet(f"""
+            QCheckBox {{
+                color: {SUBTEXT};
+                background-color: {BG_CARD};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 0 14px;
+                font-family: "Courier New";
+                font-size: 11px;
+                font-weight: bold;
+                letter-spacing: 1px;
+                spacing: 8px;
+            }}
+            QCheckBox:hover {{
+                border-color: {ACCENT};
+                color: {TEXT};
+            }}
+            QCheckBox:checked {{
+                color: {ACCENT};
+                border-color: {ACCENT};
+                background-color: #2a1014;
+            }}
+            QCheckBox::indicator {{
+                width: 14px;
+                height: 14px;
+                border: 1px solid {BORDER};
+                border-radius: 3px;
+                background-color: {BG_DARK};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {ACCENT};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {ACCENT};
+                border-color: {ACCENT};
+            }}
+        """)
+        record_row.addWidget(self._pause_tracking_cb)
         root.addLayout(record_row)
 
         # ── Middle split: current players | history ──────────────────────
@@ -597,6 +642,9 @@ class MainWindow(QMainWindow):
             lbl.setStyleSheet(f"color: {LOSS_CLR};")
         else:
             lbl.setStyleSheet(f"color: {SUBTEXT};")
+
+    def is_tracking_paused(self) -> bool:
+        return self._pause_tracking_cb.isChecked()
 
     def _on_status_changed(self, message: str):
         connected = "connected" in message.lower()
