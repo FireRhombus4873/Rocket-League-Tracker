@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
     QFrame, QSizePolicy, QDialog, QPushButton, QCheckBox,
-    QSystemTrayIcon, QMenu
+    QSystemTrayIcon, QMenu, QMessageBox
 )
 from PyQt6.QtCore import pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor, QIcon, QAction
@@ -19,6 +19,7 @@ class UISignals(QObject):
     status_changed       = pyqtSignal(str)         # status bar text
     session_prompt       = pyqtSignal(int)         # last session number, triggers dialog
     new_session_requested = pyqtSignal()           # user clicked "New Session"
+    sessions_requested   = pyqtSignal()            # user clicked "Sessions"
     game_started         = pyqtSignal()            # Rocket League process detected
 
 # --------------------------------------------------------------------------
@@ -192,6 +193,203 @@ class MatchStatsDialog(QDialog):
 
 
 # --------------------------------------------------------------------------
+# Session Summary Dialog
+# --------------------------------------------------------------------------
+class SessionSummaryDialog(QDialog):
+    def __init__(self, summaries: list, parent=None, on_delete=None):
+        """
+        on_delete: optional callable(session_num) -> list[summary]. When provided,
+        a Delete button is shown; calling it after confirmation should remove the
+        session and return fresh summaries for the dialog to re-render.
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Session Summary")
+        self.setMinimumSize(900, 480)
+        self._on_delete = on_delete
+        self.setStyleSheet(f"""
+            QDialog, QWidget {{
+                background-color: {BG_DARK};
+                color: {TEXT};
+                font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+                font-size: 13px;
+            }}
+            QTableWidget {{
+                background-color: {BG_TABLE};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                gridline-color: {BORDER};
+                color: {TEXT};
+            }}
+            QTableWidget::item {{ padding: 6px 10px; }}
+            QTableWidget::item:selected {{ background-color: #264f78; }}
+            QHeaderView::section {{
+                background-color: {BG_CARD};
+                color: {SUBTEXT};
+                border: none;
+                border-bottom: 1px solid {BORDER};
+                padding: 6px 10px;
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }}
+            QPushButton {{
+                background-color: {BG_CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 6px 18px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{ background-color: #21262d; }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(14)
+
+        # ── Header / totals ─────────────────────────────────────────────
+        self._title_lbl = QLabel()
+        self._title_lbl.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
+        self._title_lbl.setStyleSheet(f"color: {ACCENT2};")
+        self._totals_lbl = QLabel()
+        self._totals_lbl.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
+        self._totals_lbl.setStyleSheet(f"color: {TEXT};")
+
+        header = QHBoxLayout()
+        header.addWidget(self._title_lbl)
+        header.addStretch()
+        header.addWidget(self._totals_lbl)
+        layout.addLayout(header)
+
+        # ── Sessions table ──────────────────────────────────────────────
+        cols = ["Session", "Dates", "Matches", "Wins", "Losses",
+                "Win %", "Best W Streak", "Worst L Streak"]
+        self._table = QTableWidget(0, len(cols))
+        self._table.setHorizontalHeaderLabels(cols)
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._table.setAlternatingRowColors(True)
+        self._table.setStyleSheet(self._table.styleSheet() +
+                                  f"QTableWidget {{ alternate-background-color: #1a2030; }}")
+        layout.addWidget(self._table)
+
+        self._empty_lbl = QLabel("No sessions recorded yet.")
+        self._empty_lbl.setStyleSheet(f"color: {SUBTEXT}; padding: 20px;")
+        self._empty_lbl.setVisible(False)
+        layout.addWidget(self._empty_lbl)
+
+        # ── Buttons ─────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        if self._on_delete is not None:
+            self._delete_btn = QPushButton("Delete Session")
+            self._delete_btn.setFixedWidth(140)
+            self._delete_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {BG_CARD};
+                    color: {LOSS_CLR};
+                    border: 1px solid {BORDER};
+                    border-radius: 6px;
+                    padding: 6px 18px;
+                }}
+                QPushButton:hover {{
+                    background-color: #2a1014;
+                    border-color: {LOSS_CLR};
+                }}
+                QPushButton:disabled {{
+                    color: {SUBTEXT};
+                    border-color: {BORDER};
+                }}
+            """)
+            self._delete_btn.clicked.connect(self._handle_delete)
+            self._delete_btn.setEnabled(False)
+            self._table.itemSelectionChanged.connect(self._update_delete_enabled)
+            btn_row.addWidget(self._delete_btn)
+        btn_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._render(summaries)
+
+    def _render(self, summaries: list):
+        self._summaries = list(summaries)
+        total_w = sum(s.get("wins", 0)   for s in self._summaries)
+        total_l = sum(s.get("losses", 0) for s in self._summaries)
+        total_m = total_w + total_l
+        total_pct = f"{total_w/total_m:.0%}" if total_m else "—"
+
+        self._title_lbl.setText(f"ALL SESSIONS  ·  {len(self._summaries)}")
+        self._totals_lbl.setText(f"{total_w}W  {total_l}L  ·  {total_pct}")
+
+        self._table.setRowCount(0)
+        self._empty_lbl.setVisible(not self._summaries)
+        self._table.setVisible(bool(self._summaries))
+
+        for s in self._summaries:
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            first = s.get("firstDate", "")[:10]
+            last  = s.get("lastDate", "")[:10]
+            date_range = first if first == last else f"{first} → {last}"
+            pct = f"{s.get('winPct', 0):.0%}" if s.get("matches") else "—"
+
+            values = [
+                (str(s.get("sessionNum", "?")),     ACCENT2),
+                (date_range,                        SUBTEXT),
+                (str(s.get("matches", 0)),          TEXT),
+                (str(s.get("wins", 0)),             WIN_CLR),
+                (str(s.get("losses", 0)),           LOSS_CLR),
+                (pct,                               TEXT),
+                (str(s.get("bestWinStreak", 0)),    WIN_CLR),
+                (str(s.get("worstLossStreak", 0)),  LOSS_CLR),
+            ]
+            for col, (text, colour) in enumerate(values):
+                item = QTableWidgetItem(text)
+                item.setForeground(QColor(colour))
+                self._table.setItem(row, col, item)
+
+        if hasattr(self, "_delete_btn"):
+            self._update_delete_enabled()
+
+    def _update_delete_enabled(self):
+        self._delete_btn.setEnabled(bool(self._table.selectionModel().selectedRows()))
+
+    def _handle_delete(self):
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
+            return
+        idx = rows[0].row()
+        if idx >= len(self._summaries):
+            return
+        summary = self._summaries[idx]
+        num = summary.get("sessionNum")
+
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle("Delete Session")
+        confirm.setIcon(QMessageBox.Icon.Warning)
+        confirm.setText(
+            f"Delete session {num}?\n\n"
+            f"{summary.get('matches', 0)} match(es) — "
+            f"{summary.get('wins', 0)}W / {summary.get('losses', 0)}L — "
+            f"will be permanently removed from history. This cannot be undone."
+        )
+        delete_btn = confirm.addButton("Delete", QMessageBox.ButtonRole.DestructiveRole)
+        confirm.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        confirm.exec()
+        if confirm.clickedButton() != delete_btn:
+            return
+
+        new_summaries = self._on_delete(num)
+        self._render(new_summaries or [])
+
+
+# --------------------------------------------------------------------------
 # Main Window
 # --------------------------------------------------------------------------
 class MainWindow(QMainWindow):
@@ -347,6 +545,32 @@ class MainWindow(QMainWindow):
         record_row.addWidget(self._ratio_card)
         record_row.addWidget(self._streak_card)
         record_row.addStretch()
+
+        self._sessions_btn = QPushButton("☰  SESSIONS")
+        self._sessions_btn.setFixedHeight(40)
+        self._sessions_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {BG_CARD};
+                color: {SUBTEXT};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 0 16px;
+                font-family: "Courier New";
+                font-size: 11px;
+                font-weight: bold;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{
+                background-color: #1a2030;
+                border-color: {TEXT};
+                color: {TEXT};
+            }}
+            QPushButton:pressed {{ background-color: #0a1820; }}
+        """)
+        self._sessions_btn.clicked.connect(
+            lambda: self.signals.sessions_requested.emit()
+        )
+        record_row.addWidget(self._sessions_btn)
 
         self._new_session_btn = QPushButton("＋  NEW SESSION")
         self._new_session_btn.setFixedHeight(40)

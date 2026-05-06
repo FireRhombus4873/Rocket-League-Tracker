@@ -210,6 +210,19 @@ class SessionStore():
         self._player_registry   = {}
         self._seen_player_count = 0
 
+    def delete_session(self, session_num: int):
+        """Remove all matches for the given session from history and re-tally the
+        active session's wins/losses (in case the deleted session was the active one)."""
+        self.match_history = [e for e in self.match_history
+                              if e.get("sessionNum") != session_num]
+        self._save_history()
+        self.wins   = sum(1 for e in self.match_history
+                          if e.get("sessionNum") == self.session_num
+                          and e.get("result") == "win")
+        self.losses = sum(1 for e in self.match_history
+                          if e.get("sessionNum") == self.session_num
+                          and e.get("result") == "loss")
+
     def discard_match(self):
         """Reset per-match state without writing to history or touching wins/losses."""
         self.current_opponents  = []
@@ -245,6 +258,49 @@ class SessionStore():
 
     def get_recent_opponents(self, n: int = 20) -> list:
         return list(reversed(self.match_history[-n:]))
+
+    def get_session_summaries(self) -> list:
+        """One summary dict per session, most recent session first."""
+        by_session: dict = {}
+        for entry in self.match_history:
+            num = entry.get("sessionNum")
+            if not isinstance(num, int):
+                continue
+            by_session.setdefault(num, []).append(entry)
+
+        summaries = []
+        for num, entries in by_session.items():
+            wins   = sum(1 for e in entries if e.get("result") == "win")
+            losses = sum(1 for e in entries if e.get("result") == "loss")
+            total  = wins + losses
+
+            best_win, worst_loss = 0, 0
+            cur_win, cur_loss = 0, 0
+            for e in entries:
+                if e.get("result") == "win":
+                    cur_win += 1
+                    cur_loss = 0
+                    best_win = max(best_win, cur_win)
+                elif e.get("result") == "loss":
+                    cur_loss += 1
+                    cur_win = 0
+                    worst_loss = max(worst_loss, cur_loss)
+
+            dates = [e.get("date", "") for e in entries if e.get("date")]
+            summaries.append({
+                "sessionNum":      num,
+                "firstDate":       min(dates) if dates else "",
+                "lastDate":        max(dates) if dates else "",
+                "matches":         total,
+                "wins":            wins,
+                "losses":          losses,
+                "winPct":          (wins / total) if total else 0.0,
+                "bestWinStreak":   best_win,
+                "worstLossStreak": worst_loss,
+            })
+
+        summaries.sort(key=lambda s: s["sessionNum"], reverse=True)
+        return summaries
 
     def session_record(self) -> str:
         return f"{self.wins}W / {self.losses}L"

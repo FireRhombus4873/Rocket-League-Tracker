@@ -14,7 +14,7 @@ import sys
 import threading
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from mainWindow     import MainWindow
+from mainWindow     import MainWindow, SessionSummaryDialog
 from eventHandler   import EventHandler
 from socketHandler  import SocketHandler
 from processHandler import ProcessHandler
@@ -127,9 +127,24 @@ def main():
             _refresh_record(window, session)
             _refresh_history(window, session)
 
+    def on_sessions_requested():
+        def delete_and_refresh(num: int) -> list:
+            session.delete_session(num)
+            _refresh_record(window, session)
+            _refresh_history(window, session)
+            return session.get_session_summaries()
+
+        dlg = SessionSummaryDialog(
+            session.get_session_summaries(),
+            parent=window,
+            on_delete=delete_and_refresh,
+        )
+        dlg.exec()
+
     # Wire the session prompt signal to our handler
     window.signals.session_prompt.connect(prompt_session)
     window.signals.new_session_requested.connect(on_new_session_requested)
+    window.signals.sessions_requested.connect(on_sessions_requested)
 
     threading.Thread(target=process_watcher, daemon=True).start()
     sys.exit(app.exec())
