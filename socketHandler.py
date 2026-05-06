@@ -7,9 +7,11 @@ HOST = "localhost"
 PORT = 49123  # Rocket League Stats API port
 
 class SocketHandler():
-    def __init__(self, on_message_callback=None, on_update_state_callback=None):
+    def __init__(self, on_message_callback=None, on_update_state_callback=None,
+                 on_status_callback=None):
         self.on_message_callback = on_message_callback
         self.on_update_state_callback = on_update_state_callback
+        self.on_status_callback = on_status_callback
         self._thread = None
         self._running = False
 
@@ -22,35 +24,51 @@ class SocketHandler():
     def stop(self):
         self._running = False
 
+    def _emit_status(self, msg: str):
+        if self.on_status_callback:
+            self.on_status_callback(msg)
+
     def listen(self):
+        decoder = json.JSONDecoder()
         while self._running:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(5)
                     s.connect((HOST, PORT))
                     print(f"Connected to Stats API at {HOST}:{PORT}")
-                    buffer = b""
+                    self._emit_status("Connected — waiting for match")
+                    buffer = ""
                     while self._running:
-                        chunk = s.recv(4096)
+                        try:
+                            chunk = s.recv(4096)
+                        except socket.timeout:
+                            continue
                         if not chunk:
                             print("Connection closed, reconnecting...")
                             break
-                        buffer += chunk
-                        # Try to parse whatever has accumulated as a complete JSON message
-                        try:
-                            message = buffer.decode("utf-8", errors="replace")
-                            json.loads(message)          # raises if incomplete
-                            self._handle_message(message)
-                            buffer = b""
-                        except json.JSONDecodeError:
-                            pass                         # wait for more data
-            except ConnectionRefusedError:
-                pass
+                        buffer += chunk.decode("utf-8", errors="replace")
+                        # Pull out as many complete JSON objects as are buffered.
+                        # raw_decode stops at the end of one object and reports
+                        # how far it got, so back-to-back messages parse cleanly.
+                        while buffer:
+                            buffer = buffer.lstrip()
+                            if not buffer:
+                                break
+                            try:
+                                obj, idx = decoder.raw_decode(buffer)
+                            except json.JSONDecodeError:
+                                break  # incomplete — wait for more data
+                            self._handle_message(obj)
+                            buffer = buffer[idx:]
+            except (ConnectionRefusedError, socket.timeout):
+                self._emit_status("Rocket League detected — waiting for plugin...")
             except Exception as e:
                 print(f"Socket error: {e}")
+                self._emit_status(f"Socket error: {e}")
             if self._running:
                 time.sleep(2)
 
-    def _handle_message(self, raw: str):
+    def _handle_message(self, outer: dict):
         """
         Stats API message format:
         {
@@ -60,12 +78,6 @@ class SocketHandler():
         Special event "UpdateState" carries full game snapshot and is
         routed to a separate callback for state management.
         """
-        try:
-            outer = json.loads(raw)
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse message: {e}")
-            return
-
         event = outer.get("Event", "Unknown")
         data_raw = outer.get("Data", "{}")
         # Data field is a JSON string — decode it

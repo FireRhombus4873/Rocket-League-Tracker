@@ -383,12 +383,12 @@ class MainWindow(QMainWindow):
         players_card = Card("Current Match — Players")
         self._players_container = QWidget()
         self._players_container.setStyleSheet(f"background-color:{BG_CARD}")
+        self._players_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._players_layout = QVBoxLayout(self._players_container)
         self._players_layout.setContentsMargins(0, 0, 0, 0)
         self._players_layout.setSpacing(12)
         self._players_layout.addStretch()
-        players_card.content_layout.addWidget(self._players_container)
-        players_card.content_layout.addStretch()
+        players_card.content_layout.addWidget(self._players_container, stretch=1)
         players_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         middle.addWidget(players_card, stretch=3)
 
@@ -455,6 +455,7 @@ class MainWindow(QMainWindow):
             item = self._players_layout.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
 
         # Group players by team
@@ -467,12 +468,15 @@ class MainWindow(QMainWindow):
             team_colour = info.get("color") or (ACCENT2 if team_num == 0 else ACCENT)
             team_label  = info.get("name") or (f"Team {team_num + 1}" if team_num >= 0 else "Unassigned")
 
-            self._players_layout.addWidget(self._build_team_section(team_label, team_colour, teams[team_num]))
+            section = self._build_team_section(team_label, team_colour, teams[team_num])
+            self._players_layout.addWidget(section)
 
         self._players_layout.addStretch()
+        self._players_container.update()
 
     def _build_team_section(self, team_label: str, team_colour: str, players: list) -> QWidget:
-        section = QWidget()
+        section = QFrame()
+        section.setStyleSheet("QFrame { background: transparent; border: none; }")
         sec_layout = QVBoxLayout(section)
         sec_layout.setContentsMargins(0, 0, 0, 0)
         sec_layout.setSpacing(0)
@@ -490,10 +494,12 @@ class MainWindow(QMainWindow):
         sec_layout.addWidget(header)
 
         for idx, p in enumerate(players):
-            row = QWidget()
+            row = QFrame()
+            row.setObjectName("playerRow")
             row.setStyleSheet(
+                f"QFrame#playerRow {{ "
                 f"background-color: {BG_TABLE if idx % 2 == 0 else '#1a2030'}; "
-                f"border: none;"
+                f"border: none; }}"
             )
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(12, 6, 12, 6)
