@@ -14,6 +14,7 @@ from PyQt6.QtGui import QFont, QColor, QIcon, QAction
 # --------------------------------------------------------------------------
 class UISignals(QObject):
     players_updated      = pyqtSignal(list, dict)  # list of player dicts, team_info dict
+    encounters_updated   = pyqtSignal(list, list)  # opponents encounters, teammates encounters
     record_updated       = pyqtSignal(int, int)    # wins, losses
     history_updated      = pyqtSignal(list, int)   # list of match history dicts, current session num
     status_changed       = pyqtSignal(str)         # status bar text
@@ -404,6 +405,7 @@ class MainWindow(QMainWindow):
         # Public signal bus – wired up by main.py
         self.signals = UISignals()
         self.signals.players_updated.connect(self._on_players_updated)
+        self.signals.encounters_updated.connect(self._on_encounters_updated)
         self.signals.record_updated.connect(self._on_record_updated)
         self.signals.history_updated.connect(self._on_history_updated)
         self.signals.status_changed.connect(self._on_status_changed)
@@ -648,7 +650,10 @@ class MainWindow(QMainWindow):
         middle = QHBoxLayout()
         middle.setSpacing(16)
 
-        # Current match players
+        # Current match players + past encounters (stacked in the left column)
+        left_col = QVBoxLayout()
+        left_col.setSpacing(16)
+
         players_card = Card("Current Match — Players")
         self._players_container = QWidget()
         self._players_container.setStyleSheet(f"background-color:{BG_CARD}")
@@ -659,7 +664,21 @@ class MainWindow(QMainWindow):
         self._players_layout.addStretch()
         players_card.content_layout.addWidget(self._players_container, stretch=1)
         players_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        middle.addWidget(players_card, stretch=3)
+        left_col.addWidget(players_card, stretch=2)
+
+        encounters_card = Card("Past Encounters — Opponents")
+        self._encounters_container = QWidget()
+        self._encounters_container.setStyleSheet(f"background-color:{BG_CARD}")
+        self._encounters_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._encounters_layout = QVBoxLayout(self._encounters_container)
+        self._encounters_layout.setContentsMargins(0, 0, 0, 0)
+        self._encounters_layout.setSpacing(4)
+        self._encounters_layout.addStretch()
+        encounters_card.content_layout.addWidget(self._encounters_container, stretch=1)
+        encounters_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        left_col.addWidget(encounters_card, stretch=1)
+
+        middle.addLayout(left_col, stretch=3)
 
         # Opponent history
         history_card = Card("Opponent History")
@@ -789,6 +808,86 @@ class MainWindow(QMainWindow):
             sec_layout.addWidget(row)
 
         return section
+
+    def _on_encounters_updated(self, opponents: list, teammates: list):
+        # Teammates data is computed by sessionStore for future use; rendering
+        # for them isn't wired up yet — the card only shows opponents today.
+        _ = teammates
+
+        while self._encounters_layout.count():
+            item = self._encounters_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+        if not opponents:
+            empty = QLabel("Waiting for match...")
+            empty.setStyleSheet(f"color: {SUBTEXT}; background: transparent; padding: 8px;")
+            self._encounters_layout.addWidget(empty)
+        else:
+            for idx, enc in enumerate(opponents):
+                self._encounters_layout.addWidget(self._build_encounter_row(enc, idx))
+
+        self._encounters_layout.addStretch()
+        self._encounters_container.update()
+
+    def _build_encounter_row(self, enc: dict, idx: int) -> QWidget:
+        row = QFrame()
+        row.setObjectName("encounterRow")
+        row.setStyleSheet(
+            f"QFrame#encounterRow {{ "
+            f"background-color: {BG_TABLE if idx % 2 == 0 else '#1a2030'}; "
+            f"border: none; border-radius: 4px; }}"
+        )
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(10)
+
+        name_lbl = QLabel(enc.get("name", "?"))
+        name_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
+        name_lbl.setStyleSheet(f"color: {TEXT}; background: transparent; border: none;")
+        layout.addWidget(name_lbl)
+        layout.addStretch()
+
+        encounters = enc.get("encounters", 0)
+        if encounters == 0:
+            note = QLabel("First time facing them")
+            note.setStyleSheet(
+                f"color: {SUBTEXT}; background: transparent; border: none; font-style: italic;"
+            )
+            layout.addWidget(note)
+        else:
+            wins   = enc.get("wins", 0)
+            losses = enc.get("losses", 0)
+            record = QLabel(
+                f"<span style='color:{WIN_CLR}'>{wins}W</span>  "
+                f"<span style='color:{LOSS_CLR}'>{losses}L</span>  "
+                f"<span style='color:{SUBTEXT}'>· {encounters} played</span>"
+            )
+            record.setStyleSheet("background: transparent; border: none;")
+            layout.addWidget(record)
+
+            ma = enc.get("matchesAgo")
+            if ma is not None:
+                if ma == 0:
+                    when_text = "Last match"
+                elif ma == 1:
+                    when_text = "1 match ago"
+                else:
+                    when_text = f"{ma} matches ago"
+            else:
+                date = (enc.get("lastDate") or "")[:10]
+                when_text = f"On {date}" if date else "Earlier"
+
+            when_lbl = QLabel(when_text)
+            when_lbl.setStyleSheet(
+                f"color: {ACCENT2}; background: transparent; border: none; "
+                f"font-family: 'Courier New'; font-size: 11px;"
+            )
+            layout.addWidget(when_lbl)
+
+        return row
 
     def _on_record_updated(self, wins: int, losses: int):
         self._wins_card._value_label.setText(str(wins))

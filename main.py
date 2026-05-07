@@ -40,6 +40,8 @@ def main():
             window.signals.players_updated.emit(
                 session.current_players, session.team_info
             )
+            encs = session.get_current_encounters()
+            window.signals.encounters_updated.emit(encs["opponents"], encs["teammates"])
             window.signals.status_changed.emit("Match in progress")
 
     def handle_event(event: dict):
@@ -55,16 +57,19 @@ def main():
             if window.is_tracking_paused():
                 session.discard_match()
                 window.signals.players_updated.emit([], {})
+                window.signals.encounters_updated.emit([], [])
                 window.signals.status_changed.emit("Match ended — tracking paused (not saved)")
             else:
                 session.record_result(winner_int)
                 _refresh_record(window, session)
                 _refresh_history(window, session)
                 window.signals.players_updated.emit([], {})
+                window.signals.encounters_updated.emit([], [])
                 window.signals.status_changed.emit("Match ended — waiting for next match")
 
         elif "MatchDestroyed" in event:
             window.signals.players_updated.emit([], {})
+            window.signals.encounters_updated.emit([], [])
             window.signals.status_changed.emit("Connected — waiting for match")
 
     socket_handler = SocketHandler(

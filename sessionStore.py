@@ -125,12 +125,17 @@ class SessionStore():
                 "color": color or "#ffffff",
             }
 
-        # Upsert each currently present player into the registry
+        # Upsert each currently present player into the registry, keyed by
+        # PrimaryId (e.g. "Steam|123|0") so duplicate names — like "." — don't
+        # collide. Falls back to name only if PrimaryId is missing entirely.
         for p in players_raw:
-            name = p.get("Name", "Unknown")
-            self._player_registry[name] = {
+            name      = p.get("Name", "Unknown")
+            primary   = p.get("PrimaryId", "")
+            registry_key = primary or name
+            self._player_registry[registry_key] = {
+                "id":       primary,
                 "name":     name,
-                "platform": _parse_platform(p.get("PrimaryId", "")),
+                "platform": _parse_platform(primary),
                 "team":     p.get("TeamNum", -1),
                 **_extract_stats(p),
             }
@@ -180,6 +185,7 @@ class SessionStore():
 
         def _player_entry(p: dict) -> dict:
             return {
+                "id":         p.get("id",         ""),
                 "name":       p.get("name",       "Unknown"),
                 "platform":   p.get("platform",   "Unknown"),
                 "score":      p.get("score",      0),
@@ -258,6 +264,85 @@ class SessionStore():
 
     def get_recent_opponents(self, n: int = 20) -> list:
         return list(reversed(self.match_history[-n:]))
+
+    def get_current_encounters(self) -> dict:
+        """For every player currently in the match, look up our prior history with
+        them (separately as opponents and as teammates).
+
+        Returns {"opponents": [...], "teammates": [...]} where each list contains
+        one entry per current player, with this shape:
+
+            {
+              "name":           str,
+              "wins":           int,    # our wins in past matches where they appeared in this role
+              "losses":         int,
+              "encounters":     int,    # total prior matches in this role
+              "lastDate":       str,    # ISO date of most recent prior match in this role ("" if none)
+              "lastSessionNum": int | None,
+              "matchesAgo":     int | None,  # current-session matches between then and now;
+                                              # None when the last meeting was in a different session
+            }
+
+        The teammates list is populated for completeness — UI rendering of it is not yet wired up.
+        """
+        return {
+            "opponents": [self._encounter_for(p.get("id", ""), p.get("name", ""), "opponents")
+                          for p in self.current_opponents if p.get("name")],
+            "teammates": [self._encounter_for(p.get("id", ""), p.get("name", ""), "teammates")
+                          for p in self.current_teammates if p.get("name")],
+        }
+
+    def _encounter_for(self, player_id: str, name: str, list_key: str) -> dict:
+        """`list_key` is 'opponents' or 'teammates' — selects which slot of each
+        history entry to scan when counting prior meetings.
+
+        Matches by PrimaryId when available so two players sharing a display name
+        ('.' is common) aren't conflated. Falls back to name match for legacy
+        history entries written before IDs were tracked."""
+        wins = losses = encounters = 0
+        last_date = ""
+        last_session_num = None
+        matches_ago = None
+        seen_in_current_session = 0  # current-session matches walked past (newest-first)
+
+        def _entry_contains(entry_players: list) -> bool:
+            for p in entry_players:
+                p_id = p.get("id")
+                if p_id and player_id:
+                    if p_id == player_id:
+                        return True
+                else:
+                    # Either side lacks an id — fall back to name match.
+                    if p.get("name") == name:
+                        return True
+            return False
+
+        for entry in reversed(self.match_history):
+            is_current = entry.get("sessionNum") == self.session_num
+            if _entry_contains(entry.get(list_key, [])):
+                encounters += 1
+                r = entry.get("result")
+                if r == "win":
+                    wins += 1
+                elif r == "loss":
+                    losses += 1
+                if not last_date:
+                    last_date = entry.get("date", "")
+                    last_session_num = entry.get("sessionNum")
+                    if is_current:
+                        matches_ago = seen_in_current_session
+            if is_current:
+                seen_in_current_session += 1
+
+        return {
+            "name":           name,
+            "wins":           wins,
+            "losses":         losses,
+            "encounters":     encounters,
+            "lastDate":       last_date,
+            "lastSessionNum": last_session_num,
+            "matchesAgo":     matches_ago,
+        }
 
     def get_session_summaries(self) -> list:
         """One summary dict per session, most recent session first."""
