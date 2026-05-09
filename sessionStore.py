@@ -1,9 +1,7 @@
+from config import HISTORY_FILE
+from datetime import datetime
 import json
 import os
-from datetime import datetime
-from pathlib import Path
-
-HISTORY_FILE = Path(os.getenv("LOCALAPPDATA")) / "FireRhombus" / "RocketLeagueTracker" / "match_history.json"
 
 PLATFORM_MAP = {
     "Steam":     "Steam",

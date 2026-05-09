@@ -14,18 +14,20 @@ import sys
 import threading
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from mainWindow     import MainWindow, SessionSummaryDialog
-from eventHandler   import EventHandler
-from socketHandler  import SocketHandler
-from processHandler import ProcessHandler
-from sessionStore   import SessionStore
+from mainWindow      import MainWindow, SessionSummaryDialog, SettingsDialog
+from settingsManager import SettingsManager
+from eventHandler    import EventHandler
+from socketHandler   import SocketHandler
+from processHandler  import ProcessHandler
+from sessionStore    import SessionStore
 
-LOCAL_USERNAME = "FireRhombus4873"
-
+LOCAL_USERNAME = None
+COMMON_TEAMMATES = []
 
 def main():
     app = QApplication(sys.argv)
 
+    settings        = SettingsManager()
     window          = MainWindow()
     session         = SessionStore()
     event_handler   = EventHandler(on_event_callback=lambda evt: handle_event(evt))
@@ -104,13 +106,46 @@ def main():
             session.continue_session()
         _refresh_record(window, session)
 
+    def prompt_settings():
+        """
+        Open the SettingsDialog. Used both by the gear button in the main window
+        and as a first-run prompt when no username is configured.
+
+        Runs on the main thread via a signal so it's safe to show a dialog.
+        Always syncs the in-memory globals from the settings file afterwards
+        so a cancelled dialog doesn't lose previously-saved values.
+        """
+        global LOCAL_USERNAME, COMMON_TEAMMATES
+
+        saved_username  = settings.settings.get("localUsername") or ""
+        saved_teammates = list(settings.settings.get("commonTeammates") or [])
+
+        dlg = SettingsDialog(
+            username=saved_username,
+            teammates=saved_teammates,
+            parent=window,
+        )
+        if dlg.exec() == dlg.DialogCode.Accepted:
+            saved_username  = dlg.username()
+            saved_teammates = dlg.teammates()
+            settings.settings["localUsername"]   = saved_username
+            settings.settings["commonTeammates"] = saved_teammates
+            settings.saveSettings()
+
+        LOCAL_USERNAME   = saved_username
+        COMMON_TEAMMATES = saved_teammates
+
     def process_watcher():
         while True:
             window.signals.status_changed.emit("Waiting for Rocket League...")
             process_handler.wait_for_game()
 
             window.signals.game_started.emit()
-            # Ask on main thread (Qt requires UI calls on main thread)
+            # Ask on main thread (Qt requires UI calls on main thread).
+            # Only auto-prompt for settings on first run — once a username is
+            # saved, the user opens the dialog manually via the gear button.
+            if not settings.settings.get("localUsername"):
+                window.signals.settings_prompt.emit()
             window.signals.session_prompt.emit(session.session_num)
 
             window.signals.status_changed.emit("Rocket League detected — connecting...")
@@ -148,6 +183,7 @@ def main():
 
     # Wire the session prompt signal to our handler
     window.signals.session_prompt.connect(prompt_session)
+    window.signals.settings_prompt.connect(prompt_settings)
     window.signals.new_session_requested.connect(on_new_session_requested)
     window.signals.sessions_requested.connect(on_sessions_requested)
 
