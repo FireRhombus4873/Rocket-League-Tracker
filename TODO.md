@@ -1,8 +1,8 @@
 ## Configuration / setup
-- [ ] Move `LOCAL_USERNAME` out of `main.py` into a settings file (or auto-detect from `UpdateState` so renames don't break it).
+- [x] Move `LOCAL_USERNAME` out of `main.py` into a settings file (or auto-detect from `UpdateState` so renames don't break it).
 - [ ] Persist window size/position between launches.
-- [ ] Add a "first run" prompt to set username, instead of editing `main.py`.
-- [ ] Allow user to also add common teammates names as a comma seperated list.
+- [x] Add a "first run" prompt to set username, instead of editing `main.py`.
+- [x] Allow user to also add common teammates names as a comma seperated list.
 
 ## Data / correctness
 - [ ] Backfill `id` on existing history entries via a one-shot migration on app start (currently relies on the name-fallback match indefinitely). If possible...
@@ -12,6 +12,7 @@
 
 ## UI features
 - [ ] Render the teammate side of the Past Encounters card (data already computed in `get_current_encounters()`).
+    - [ ] Filter teammates so that common teammates are not mentioned
 - [ ] Filter / search box on the Opponent History table.
 - [ ] Highlight in the Past Encounters card when an opponent has a notable record vs you (e.g. lost 3+ in a row, or 0–5 all-time).
 - [ ] Let the user name sessions (label like "Friday duos") instead of just a number. Maybe?
