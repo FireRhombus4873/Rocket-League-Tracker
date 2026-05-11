@@ -8,5 +8,6 @@ if os.name == "nt":
 else:
     BASE_DIR = Path.home() / "FireRhombus" / f".{APP_NAME}"
 
+HISTORY_DB_FILE = BASE_DIR / "history.db"
 HISTORY_FILE =  BASE_DIR / "match_history.json"
 SETTINGS_FILE = BASE_DIR / "settings.json"

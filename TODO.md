@@ -5,9 +5,8 @@
 - [x] Allow user to also add common teammates names as a comma seperated list.
 
 ## Data / correctness
-- [ ] Backfill `id` on existing history entries via a one-shot migration on app start (currently relies on the name-fallback match indefinitely). If possible...
 - [ ] Allow editing or deleting a single match (not just whole sessions) from the history table.
-- [ ] Change history.json to be a database file (use sqlite), for faster retrieval of information, etc.
+- [x] Change history.json to be a database file (use sqlite), for faster retrieval of information, etc.
 - [ ] Export history to CSV.
 
 ## UI features
