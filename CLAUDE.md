@@ -10,7 +10,7 @@ The app runs in the background, optionally autostarting with Windows, and ships 
 
 ## Architecture
 
-The app is built around five components, each in its own file. They communicate through callbacks and PyQt signals — the boundaries between them matter, so changes should respect the existing flow.
+The runtime pipeline is built around five components, each in its own file, plus two support modules (`config.py`, `settingsManager.py`) that own paths and persisted preferences. They communicate through callbacks and PyQt signals — the boundaries between them matter, so changes should respect the existing flow.
 
 ```
 processHandler ──watches──> RocketLeague.exe
@@ -32,8 +32,13 @@ mainWindow (PyQt6 GUI)
 - Constructs every component
 - Defines `handle_event` (named events) and `handle_update_state` (the high-frequency tick) as nested functions so they can capture `window`, `session`, etc.
 - Constructs `SocketHandler` *after* the callbacks are defined to avoid `UnboundLocalError`
-- Spawns `process_watcher` on a background thread that loops forever: wait for RL → start socket → wait for RL to close → stop socket → repeat
-- `LOCAL_USERNAME` is hardcoded at the top — it's used by `sessionStore` to determine which team is "ours"
+- Spawns `process_watcher` on a background thread that loops forever: wait for RL → emit `settings_prompt` if no username is saved → start socket → wait for RL to close → stop socket → repeat
+- `LOCAL_USERNAME` / `COMMON_TEAMMATES` are module globals populated from `SettingsManager` via the `prompt_settings` handler (first-run prompt or gear button). The running socket loop reads them by name at call time, so updates from the settings dialog propagate without a restart.
+
+### `config.py` / `settingsManager.py` — paths + user settings
+
+- `config.py` exposes the single source of truth for filesystem paths: `BASE_DIR`, `HISTORY_DB_FILE`, `HISTORY_FILE` (legacy JSON, only used by the one-shot migration), `SETTINGS_FILE`.
+- `SettingsManager` loads/saves `settings.json`. Two keys today: `localUsername` (used by `sessionStore` to determine which team is "ours") and `commonTeammates` (a list, currently informational only — see TODO).
 
 ### `socketHandler.py` — TCP listener
 
@@ -53,30 +58,35 @@ mainWindow (PyQt6 GUI)
 
 ### `sessionStore.py` — state + persistence
 
-This is the most complex file. It handles three intertwined concerns:
+This is the most complex file. It handles four intertwined concerns:
 
-**Player roster tracking**: `_player_registry` is a dict keyed by player name that persists for the entire match. Players are *upserted* (never deleted) so leavers retain their last known stats. `current_players`/`current_opponents`/`current_teammates` are derived from the registry.
+**Player roster tracking**: `_player_registry` is a dict keyed by **`PrimaryId`** (e.g. `"Steam|123|0"`) that persists for the entire match. Keying by ID rather than name means players who share a display name like `.` don't collide. Players are *upserted* (never deleted) so leavers retain their last known stats. `current_players` / `current_opponents` / `current_teammates` are derived from the registry.
 
 **Stats vs UI refresh separation**: `try_set_players_from_update` is called on every `UpdateState` tick. It always updates stats but only returns `True` (signalling a UI refresh) when the roster changes (new GUID or new player joined). This keeps stats live without flickering the UI.
 
-**Session management**: `session_num` increments on `new_session()` (Rocket League launched fresh) or stays the same on `continue_session()` (re-tallies wins/losses from history for that session). The user picks via a dialog when RL is detected.
+**Session management**: `session_num` increments on `new_session()` (Rocket League launched fresh) or stays the same on `continue_session()` (re-tallies wins/losses from the database for that session). The user picks via a dialog when RL is detected.
 
-History is persisted as JSON to `%LOCALAPPDATA%\FireRhombus\RocketLeagueTracker\match_history.json`.
+**Persistence (SQLite)**: history lives in `%LOCALAPPDATA%\FireRhombus\RocketLeagueTracker\history.db`. Four tables: `sessions`, `matches`, `players`, `match_players` — see *Data Schema* below. The DB is the source of truth; `self.match_history` is a **bounded in-memory cache of only the most recent `_cache_size` (20) matches**, oldest-first, used to feed the history table in the UI. All aggregations (`_encounter_for`, `get_session_summaries`, `_retally_active_session`) query the DB directly — they never walk the cache — so cache size has zero effect on correctness.
 
-**Pause tracking**: when `MainWindow.is_tracking_paused()` is true, `main.py`'s `MatchEnded` handler calls `session.discard_match()` instead of `record_result()`. Players still display live during the match (the `UpdateState` flow is untouched), but no history entry is written and `wins`/`losses` stay put. The user toggles this via the checkbox next to "New Session".
+If a legacy `match_history.json` exists and the DB has no matches, `_maybe_migrate_from_json` ports it over once on startup and renames the file to `.bak`. Entries written before ID-tracking get a synthetic `legacy:<name>` player id; new bad rows (if `PrimaryId` is somehow empty at match end) get `unknown:<name>` — both kept distinct so `_encounter_for` knows which rows to fall back to a name match on.
+
+**Pause tracking**: when `MainWindow.is_tracking_paused()` is true, `main.py`'s `MatchEnded` handler calls `session.discard_match()` instead of `record_result()`. Players still display live during the match (the `UpdateState` flow is untouched), but no DB row is written and `wins`/`losses` stay put. The user toggles this via the checkbox in the win/loss row.
 
 ### `processHandler.py` — process detection
 
 - `wait_for_game()` polls `psutil` every 2s for `RocketLeague.exe`
-- `wait_for_game_to_close()` requires **3 consecutive** missed checks before declaring the game closed. This is critical for autostart — `psutil` is flaky during system boot and a single missed check would cause `socket_handler.stop()` to fire, killing the listener thread
-- All `psutil` calls are wrapped in a try/except for `NoSuchProcess`/`AccessDenied` errors that can occur during boot
+- `wait_for_game_to_close()` polls the same way and returns as soon as `psutil` reports the process gone
+- ⚠️ Earlier revisions had a `CLOSE_CONFIRMATIONS = 3` debounce wrapped in try/except for `NoSuchProcess` / `AccessDenied` (psutil is flaky during system boot, and one missed check kills the socket listener). That safety net is **not currently in the code** — restoring it is worth doing before declaring autostart "fixed"
 
 ### `mainWindow.py` — GUI
 
-- Single window with: status header, win/loss/ratio/streak cards, current-match player list, match history table
+- Single window with: status header (status indicator + gear settings button), win/loss/ratio/streak cards, SESSIONS / NEW SESSION / PAUSE TRACKING controls, current-match player list, Past Encounters card (per-opponent W/L vs you), match history table
 - Dark theme defined as constants (BG_DARK, ACCENT, etc.) at the top
 - All UI updates flow through `UISignals` (a `QObject` with `pyqtSignal`s) — background threads emit, main thread slots receive. **Never touch widgets from a background thread directly.**
-- Clicking a history row opens a `MatchStatsDialog` showing per-player stats for that match
+- Three modal dialogs:
+  - `MatchStatsDialog` — opened by clicking a history row; shows per-player stats for that match
+  - `SessionSummaryDialog` — opened by the SESSIONS button; one row per session with delete + confirm
+  - `SettingsDialog` — opened by the gear button or auto-prompted on first run when no username is saved
 - System tray icon allows minimise-to-tray behaviour for autostart use
 
 ## Critical Conventions
@@ -90,7 +100,7 @@ History is persisted as JSON to `%LOCALAPPDATA%\FireRhombus\RocketLeagueTracker\
 
 - The `Data` field is a JSON-encoded **string**, requiring a second `json.loads`. This trips people up.
 - Pre-match `UpdateState` ticks contain players with all-zero stats. Don't snapshot stats early — `record_result` is the only place that should write to history.
-- A player's `PrimaryId` looks like `"Epic|abc123|0"` or `"Steam|7656...|0"`. The platform prefix is parsed via `_parse_platform()`.
+- A player's `PrimaryId` looks like `"Epic|abc123|0"` or `"Steam|7656...|0"` — `platform|accountId|splitscreenIndex`. The platform prefix is parsed via `_parse_platform()`. **`PrimaryId` is the canonical player identity**; never compare players by display name (`.` is a common name, names can change). Splitscreen index is included so guest players on the same console are tracked as distinct.
 - Team colours come from `Game.Teams[].ColorPrimary` as a hex string with no `#` prefix.
 
 ### Editing `sessionStore.py`
@@ -101,9 +111,11 @@ The interaction between `_player_registry`, `_seen_player_count`, and the "shoul
 2. Late joiner mid-match — should refresh UI
 3. Stats updating during play (no roster change) — should NOT refresh UI but MUST update stats
 4. Player leaves mid-match — should keep their stats in the registry
-5. Match ends — `record_result` snapshots current state and clears the registry; or, when tracking is paused, `discard_match` clears the registry without writing
+5. Match ends — `record_result` writes to the DB and trims the cache; or, when tracking is paused, `discard_match` clears the registry without writing
 
 If a change breaks any of these, stats won't get recorded correctly — and silent data corruption is the worst kind of bug here.
+
+Also: any new aggregation (W/L totals, streaks, per-player records) must hit the DB. **Do not derive values from `self.match_history`** — it's a bounded cache of the most recent 20 matches and is wrong for any session with more games than that. Add a SQL query or extend `_retally_active_session` / `get_session_summaries` instead.
 
 ## Building and Running
 
@@ -128,9 +140,9 @@ The build uses `RocketLeagueTracker.spec` (a PyInstaller spec file) which bundle
 
 ## Things That Aren't What They Look Like
 
-- **The Stats API is not the SOS plugin.** Earlier versions of this code used SOS, which has different event names (`game:ball_hit` etc.), a different port (49122), and a different message structure. Some old comments may still reference SOS — they're stale. Stats API is the source of truth.
+- **The Stats API is not the SOS plugin.** Earlier versions of this code used SOS — different event names (`game:ball_hit` etc.), a different port (49122), and a different message structure. The current codebase no longer references SOS, but if you find any such comments in future, they're stale: Stats API is the source of truth.
 - **`MatchInitialized` does not contain player data** in the Stats API. Players are *only* available through `UpdateState`. Don't add player parsing to `on_match_initialized` in `eventHandler.py`.
-- **psutil is unreliable during boot.** Don't reduce `CLOSE_CONFIRMATIONS` in `processHandler.py` without understanding why it's there — the value of 3 was set deliberately to fix autostart issues.
+- **`self.match_history` is not the history** — it's a bounded 20-match cache for the UI table only. The DB is authoritative. See *Editing `sessionStore.py`*.
 
 ## Versioning
 
@@ -138,29 +150,25 @@ Project follows semver. Currently in pre-1.0 — schema and core behaviour can s
 
 ## Data Schema
 
-Match history entry structure:
+History is stored in SQLite at `%LOCALAPPDATA%\FireRhombus\RocketLeagueTracker\history.db`. The schema is created/maintained by `SessionStore._initDatabase` and stamped with `PRAGMA user_version` (currently `1`):
+
+- **`sessions`** — `id` PK (matches `session_num`), `name` (nullable, reserved for the labelled-sessions TODO), `started_at`, `ended_at`
+- **`matches`** — `id` autoincrement PK, `session_id` FK ON DELETE CASCADE, `played_at`, `result` ∈ {`win`,`loss`}, `winner_team`
+- **`players`** — `id` PK = full `PrimaryId`, `name` (most recently seen), `platform`, `first_seen`, `last_seen`. Canonical identity.
+- **`match_players`** — composite PK `(match_id, player_id)`, `role` ∈ {`opponent`,`teammate`}, `name_at_match` (snapshot — preserved so renames don't rewrite history), `team_num`, stat columns. Indexed on `(player_id, role)` for fast encounter lookups.
+
+`record_result` upserts the session row (bumping `ended_at`), inserts the match, upserts each `players` row, then inserts `match_players`. `delete_session` is a single `DELETE FROM sessions WHERE id = ?` — FK cascades handle the rest.
+
+Synthetic player ids:
+- `legacy:<name>` — written by `_maybe_migrate_from_json` for entries that predate ID tracking. `_encounter_for` falls back to a name match against these rows only.
+- `unknown:<name>` — written by `record_result` if `PrimaryId` is somehow empty at match end. Should never appear under normal play; if it does, treat as a bug signal.
+
+The legacy JSON shape (still readable by `_maybe_migrate_from_json`) was:
 
 ```json
-{
-  "date": "2026-05-01T17:55:49",
-  "result": "win" | "loss",
-  "sessionNum": 3,
-  "opponents": [
-    {
-      "name": "...",
-      "platform": "Epic" | "Steam" | "PlayStation" | "Xbox" | "Switch",
-      "score": 0,
-      "goals": 0,
-      "shots": 0,
-      "assists": 0,
-      "saves": 0,
-      "touches": 0,
-      "carTouches": 0,
-      "demos": 0
-    }
-  ],
-  "teammates": [ /* same shape as opponents */ ]
-}
+{ "date": "...", "result": "win|loss", "sessionNum": 3,
+  "opponents": [ { "id?": "Steam|...|0", "name": "...", "platform": "...", "score": 0, "goals": 0, ... } ],
+  "teammates": [ /* same shape */ ] }
 ```
 
-When changing this schema, remember that existing JSON files in users' `%LOCALAPPDATA%` won't have the new fields — `_load_history` should tolerate missing keys via `.get(key, default)` patterns rather than failing hard.
+When evolving the schema, bump `user_version` and add an idempotent upgrade step in `_initDatabase` (or a dedicated migration helper). Existing DBs in users' `%LOCALAPPDATA%` won't have the new columns — use `ALTER TABLE … ADD COLUMN` with safe defaults rather than failing hard.
