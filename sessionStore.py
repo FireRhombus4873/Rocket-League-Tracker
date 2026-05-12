@@ -1,6 +1,7 @@
 from config import HISTORY_FILE, HISTORY_DB_FILE
 from datetime import datetime
 import sqlite3
+import threading
 import json
 import os
 
@@ -56,9 +57,15 @@ class SessionStore():
         self._cache_size = 20
 
         HISTORY_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(HISTORY_DB_FILE))
+        # The socket listener thread calls record_result / get_current_encounters
+        # while the Qt main thread calls delete_session / get_session_summaries.
+        # `check_same_thread=False` permits cross-thread use; `_db_lock` (RLock so
+        # methods that call other locked methods don't deadlock) serialises access
+        # to the shared cursor.
+        self.conn = sqlite3.connect(str(HISTORY_DB_FILE), check_same_thread=False)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
+        self._db_lock = threading.RLock()
 
         self._initDatabase()
         self._maybe_migrate_from_json()
@@ -85,17 +92,19 @@ class SessionStore():
 
     def _retally_active_session(self):
         """Pull the active session's win/loss counts directly from the DB."""
-        self.cursor.execute(
-            "SELECT result, COUNT(*) FROM matches WHERE session_id = ? GROUP BY result",
-            (self.session_num,),
-        )
-        counts = {r: c for r, c in self.cursor.fetchall()}
+        with self._db_lock:
+            self.cursor.execute(
+                "SELECT result, COUNT(*) FROM matches WHERE session_id = ? GROUP BY result",
+                (self.session_num,),
+            )
+            counts = {r: c for r, c in self.cursor.fetchall()}
         self.wins   = counts.get("win", 0)
         self.losses = counts.get("loss", 0)
 
     def _load_last_session_num(self) -> int:
-        self.cursor.execute("SELECT COALESCE(MAX(id), 0) FROM sessions")
-        return self.cursor.fetchone()[0]
+        with self._db_lock:
+            self.cursor.execute("SELECT COALESCE(MAX(id), 0) FROM sessions")
+            return self.cursor.fetchone()[0]
 
     # ------------------------------------------------------------------
     # Match lifecycle
@@ -221,43 +230,44 @@ class SessionStore():
         teammates  = [_player_entry(p) for p in self.current_teammates
                       if p.get("platform") != "Unknown"]
 
-        # Ensure the session row exists; bump its ended_at to this match.
-        self.cursor.execute("""
-            INSERT INTO sessions (id, name, started_at, ended_at)
-            VALUES (?, NULL, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at
-        """, (self.session_num, played_at, played_at))
+        with self._db_lock:
+            # Ensure the session row exists; bump its ended_at to this match.
+            self.cursor.execute("""
+                INSERT INTO sessions (id, name, started_at, ended_at)
+                VALUES (?, NULL, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at
+            """, (self.session_num, played_at, played_at))
 
-        self.cursor.execute("""
-            INSERT INTO matches (session_id, played_at, result, winner_team)
-            VALUES (?, ?, ?, ?)
-        """, (self.session_num, played_at, result_str, winner_team))
-        match_id = self.cursor.lastrowid
+            self.cursor.execute("""
+                INSERT INTO matches (session_id, played_at, result, winner_team)
+                VALUES (?, ?, ?, ?)
+            """, (self.session_num, played_at, result_str, winner_team))
+            match_id = self.cursor.lastrowid
 
-        for role, plist in (("opponent", opponents), ("teammate", teammates)):
-            for p in plist:
-                # An empty PrimaryId at match end is unexpected; synthesise an
-                # id so the FK to `players` still holds. Distinct from the
-                # `legacy:` prefix used by the one-shot JSON migration.
-                pid = p["id"] or f"unknown:{p['name']}"
-                self.cursor.execute("""
-                    INSERT INTO players (id, name, platform, first_seen, last_seen)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        name      = excluded.name,
-                        platform  = excluded.platform,
-                        last_seen = excluded.last_seen
-                """, (pid, p["name"], p["platform"], played_at, played_at))
-                self.cursor.execute("""
-                    INSERT OR IGNORE INTO match_players
-                        (match_id, player_id, role, name_at_match, team_num,
-                         score, goals, shots, assists, saves, touches, car_touches, demos)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (match_id, pid, role, p["name"], None,
-                      p["score"], p["goals"], p["shots"], p["assists"], p["saves"],
-                      p["touches"], p["carTouches"], p["demos"]))
+            for role, plist in (("opponent", opponents), ("teammate", teammates)):
+                for p in plist:
+                    # An empty PrimaryId at match end is unexpected; synthesise an
+                    # id so the FK to `players` still holds. Distinct from the
+                    # `legacy:` prefix used by the one-shot JSON migration.
+                    pid = p["id"] or f"unknown:{p['name']}"
+                    self.cursor.execute("""
+                        INSERT INTO players (id, name, platform, first_seen, last_seen)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            name      = excluded.name,
+                            platform  = excluded.platform,
+                            last_seen = excluded.last_seen
+                    """, (pid, p["name"], p["platform"], played_at, played_at))
+                    self.cursor.execute("""
+                        INSERT OR IGNORE INTO match_players
+                            (match_id, player_id, role, name_at_match, team_num,
+                             score, goals, shots, assists, saves, touches, car_touches, demos)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (match_id, pid, role, p["name"], None,
+                          p["score"], p["goals"], p["shots"], p["assists"], p["saves"],
+                          p["touches"], p["carTouches"], p["demos"]))
 
-        self.conn.commit()
+            self.conn.commit()
 
         # Mirror the new row into the bounded recent-matches cache so the
         # history table picks it up without re-querying. Trim oldest if needed.
@@ -281,8 +291,9 @@ class SessionStore():
         """Remove all matches for the given session from the database and re-tally
         the active session's wins/losses (in case the deleted session was the
         active one). FK ON DELETE CASCADE handles `matches` and `match_players`."""
-        self.cursor.execute("DELETE FROM sessions WHERE id = ?", (session_num,))
-        self.conn.commit()
+        with self._db_lock:
+            self.cursor.execute("DELETE FROM sessions WHERE id = ?", (session_num,))
+            self.conn.commit()
         self.match_history = self._load_history()
         self._retally_active_session()
 
@@ -301,7 +312,8 @@ class SessionStore():
     def _initDatabase(self):
         """Create tables/indexes if they don't yet exist. Idempotent — safe to
         run on every launch."""
-        self.cursor.executescript("""
+        with self._db_lock:
+            self.cursor.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
                 id         INTEGER PRIMARY KEY,
                 name       TEXT,
@@ -347,76 +359,77 @@ class SessionStore():
                 ON match_players(player_id, role);
 
             PRAGMA user_version = 1;
-        """)
-        self.conn.commit()
+            """)
+            self.conn.commit()
 
     def _maybe_migrate_from_json(self):
         """One-shot import: if a legacy match_history.json exists and the DB has
         no matches yet, port its contents over and rename the JSON to .bak so
         we don't re-import on the next launch."""
-        self.cursor.execute("SELECT COUNT(*) FROM matches")
-        if self.cursor.fetchone()[0] > 0:
-            return
-        if not os.path.exists(HISTORY_FILE):
-            return
-        try:
-            with open(HISTORY_FILE, "r") as f:
-                entries = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return
-        if not entries:
-            return
+        with self._db_lock:
+            self.cursor.execute("SELECT COUNT(*) FROM matches")
+            if self.cursor.fetchone()[0] > 0:
+                return
+            if not os.path.exists(HISTORY_FILE):
+                return
+            try:
+                with open(HISTORY_FILE, "r") as f:
+                    entries = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                return
+            if not entries:
+                return
 
-        # Build session rows first using each session's date range.
-        by_session: dict = {}
-        for e in entries:
-            num = e.get("sessionNum")
-            if isinstance(num, int):
-                by_session.setdefault(num, []).append(e)
-        for num, ses_entries in by_session.items():
-            dates = [e.get("date", "") for e in ses_entries if e.get("date")]
-            first = min(dates) if dates else ""
-            last  = max(dates) if dates else ""
-            self.cursor.execute(
-                "INSERT OR IGNORE INTO sessions (id, name, started_at, ended_at) VALUES (?, NULL, ?, ?)",
-                (num, first, last),
-            )
+            # Build session rows first using each session's date range.
+            by_session: dict = {}
+            for e in entries:
+                num = e.get("sessionNum")
+                if isinstance(num, int):
+                    by_session.setdefault(num, []).append(e)
+            for num, ses_entries in by_session.items():
+                dates = [e.get("date", "") for e in ses_entries if e.get("date")]
+                first = min(dates) if dates else ""
+                last  = max(dates) if dates else ""
+                self.cursor.execute(
+                    "INSERT OR IGNORE INTO sessions (id, name, started_at, ended_at) VALUES (?, NULL, ?, ?)",
+                    (num, first, last),
+                )
 
-        for e in entries:
-            session_id = e.get("sessionNum")
-            result     = e.get("result")
-            played_at  = e.get("date", "")
-            if not isinstance(session_id, int) or result not in ("win", "loss"):
-                continue
-            self.cursor.execute(
-                "INSERT INTO matches (session_id, played_at, result, winner_team) VALUES (?, ?, ?, NULL)",
-                (session_id, played_at, result),
-            )
-            match_id = self.cursor.lastrowid
-            for role, plist in (("opponent", e.get("opponents", [])),
-                                ("teammate", e.get("teammates", []))):
-                for p in plist:
-                    pid      = p.get("id") or f"legacy:{p.get('name', 'Unknown')}"
-                    name     = p.get("name", "Unknown")
-                    platform = p.get("platform", "Unknown")
-                    self.cursor.execute("""
-                        INSERT INTO players (id, name, platform, first_seen, last_seen)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(id) DO UPDATE SET
-                            name = excluded.name,
-                            last_seen = excluded.last_seen
-                    """, (pid, name, platform, played_at, played_at))
-                    self.cursor.execute("""
-                        INSERT OR IGNORE INTO match_players
-                            (match_id, player_id, role, name_at_match, team_num,
-                             score, goals, shots, assists, saves, touches, car_touches, demos)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (match_id, pid, role, name, None,
-                          p.get("score", 0), p.get("goals", 0), p.get("shots", 0),
-                          p.get("assists", 0), p.get("saves", 0), p.get("touches", 0),
-                          p.get("carTouches", 0), p.get("demos", 0)))
+            for e in entries:
+                session_id = e.get("sessionNum")
+                result     = e.get("result")
+                played_at  = e.get("date", "")
+                if not isinstance(session_id, int) or result not in ("win", "loss"):
+                    continue
+                self.cursor.execute(
+                    "INSERT INTO matches (session_id, played_at, result, winner_team) VALUES (?, ?, ?, NULL)",
+                    (session_id, played_at, result),
+                )
+                match_id = self.cursor.lastrowid
+                for role, plist in (("opponent", e.get("opponents", [])),
+                                    ("teammate", e.get("teammates", []))):
+                    for p in plist:
+                        pid      = p.get("id") or f"legacy:{p.get('name', 'Unknown')}"
+                        name     = p.get("name", "Unknown")
+                        platform = p.get("platform", "Unknown")
+                        self.cursor.execute("""
+                            INSERT INTO players (id, name, platform, first_seen, last_seen)
+                            VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT(id) DO UPDATE SET
+                                name = excluded.name,
+                                last_seen = excluded.last_seen
+                        """, (pid, name, platform, played_at, played_at))
+                        self.cursor.execute("""
+                            INSERT OR IGNORE INTO match_players
+                                (match_id, player_id, role, name_at_match, team_num,
+                                 score, goals, shots, assists, saves, touches, car_touches, demos)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (match_id, pid, role, name, None,
+                              p.get("score", 0), p.get("goals", 0), p.get("shots", 0),
+                              p.get("assists", 0), p.get("saves", 0), p.get("touches", 0),
+                              p.get("carTouches", 0), p.get("demos", 0)))
 
-        self.conn.commit()
+            self.conn.commit()
 
         try:
             os.rename(HISTORY_FILE, str(HISTORY_FILE) + ".bak")
@@ -428,27 +441,28 @@ class SessionStore():
         shape, oldest-first. Bounded by `self._cache_size` — full history lives
         in the DB and is reached via direct queries (`_encounter_for`,
         `get_session_summaries`, `_retally_active_session`)."""
-        self.cursor.execute(
-            "SELECT id FROM matches ORDER BY id DESC LIMIT ?",
-            (self._cache_size,),
-        )
-        recent_ids = [r[0] for r in self.cursor.fetchall()]
-        if not recent_ids:
-            return []
-        placeholders = ",".join("?" * len(recent_ids))
-        self.cursor.execute(f"""
-            SELECT m.id, m.session_id, m.played_at, m.result,
-                   mp.player_id, mp.role, mp.name_at_match,
-                   mp.score, mp.goals, mp.shots, mp.assists, mp.saves,
-                   mp.touches, mp.car_touches, mp.demos,
-                   p.platform
-            FROM matches m
-            LEFT JOIN match_players mp ON mp.match_id = m.id
-            LEFT JOIN players p ON p.id = mp.player_id
-            WHERE m.id IN ({placeholders})
-            ORDER BY m.id ASC
-        """, recent_ids)
-        rows = self.cursor.fetchall()
+        with self._db_lock:
+            self.cursor.execute(
+                "SELECT id FROM matches ORDER BY id DESC LIMIT ?",
+                (self._cache_size,),
+            )
+            recent_ids = [r[0] for r in self.cursor.fetchall()]
+            if not recent_ids:
+                return []
+            placeholders = ",".join("?" * len(recent_ids))
+            self.cursor.execute(f"""
+                SELECT m.id, m.session_id, m.played_at, m.result,
+                       mp.player_id, mp.role, mp.name_at_match,
+                       mp.score, mp.goals, mp.shots, mp.assists, mp.saves,
+                       mp.touches, mp.car_touches, mp.demos,
+                       p.platform
+                FROM matches m
+                LEFT JOIN match_players mp ON mp.match_id = m.id
+                LEFT JOIN players p ON p.id = mp.player_id
+                WHERE m.id IN ({placeholders})
+                ORDER BY m.id ASC
+            """, recent_ids)
+            rows = self.cursor.fetchall()
 
         entries: dict = {}
         for (mid, sid, played_at, result,
@@ -516,33 +530,34 @@ class SessionStore():
         role = "opponent" if list_key == "opponents" else "teammate"
         pid  = player_id or ""
 
-        self.cursor.execute("""
-            SELECT m.id, m.session_id, m.played_at, m.result
-            FROM matches m
-            JOIN match_players mp ON mp.match_id = m.id
-            WHERE mp.role = ?
-              AND (mp.player_id = ?
-                   OR (mp.player_id LIKE 'legacy:%' AND mp.name_at_match = ?))
-            ORDER BY m.id DESC
-        """, (role, pid, name))
-        rows = self.cursor.fetchall()
+        with self._db_lock:
+            self.cursor.execute("""
+                SELECT m.id, m.session_id, m.played_at, m.result
+                FROM matches m
+                JOIN match_players mp ON mp.match_id = m.id
+                WHERE mp.role = ?
+                  AND (mp.player_id = ?
+                       OR (mp.player_id LIKE 'legacy:%' AND mp.name_at_match = ?))
+                ORDER BY m.id DESC
+            """, (role, pid, name))
+            rows = self.cursor.fetchall()
 
-        wins       = sum(1 for r in rows if r[3] == "win")
-        losses     = sum(1 for r in rows if r[3] == "loss")
-        encounters = len(rows)
+            wins       = sum(1 for r in rows if r[3] == "win")
+            losses     = sum(1 for r in rows if r[3] == "loss")
+            encounters = len(rows)
 
-        last_date         = ""
-        last_session_num  = None
-        matches_ago       = None
-        if rows:
-            last_match_id, last_session_num, last_date, _ = rows[0]
-            last_date = last_date or ""
-            if last_session_num == self.session_num:
-                self.cursor.execute(
-                    "SELECT COUNT(*) FROM matches WHERE session_id = ? AND id > ?",
-                    (self.session_num, last_match_id),
-                )
-                matches_ago = self.cursor.fetchone()[0]
+            last_date         = ""
+            last_session_num  = None
+            matches_ago       = None
+            if rows:
+                last_match_id, last_session_num, last_date, _ = rows[0]
+                last_date = last_date or ""
+                if last_session_num == self.session_num:
+                    self.cursor.execute(
+                        "SELECT COUNT(*) FROM matches WHERE session_id = ? AND id > ?",
+                        (self.session_num, last_match_id),
+                    )
+                    matches_ago = self.cursor.fetchone()[0]
 
         return {
             "name":           name,
@@ -557,13 +572,15 @@ class SessionStore():
     def get_session_summaries(self) -> list:
         """One summary dict per session, most recent session first. Reads from
         the DB so it sees the full history, not just the bounded cache."""
-        self.cursor.execute("""
-            SELECT m.session_id, m.played_at, m.result
-            FROM matches m
-            ORDER BY m.session_id ASC, m.id ASC
-        """)
+        with self._db_lock:
+            self.cursor.execute("""
+                SELECT m.session_id, m.played_at, m.result
+                FROM matches m
+                ORDER BY m.session_id ASC, m.id ASC
+            """)
+            rows = self.cursor.fetchall()
         by_session: dict = {}
-        for sid, played_at, result in self.cursor.fetchall():
+        for sid, played_at, result in rows:
             by_session.setdefault(sid, []).append((played_at, result))
 
         summaries = []

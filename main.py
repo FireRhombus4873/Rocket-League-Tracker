@@ -25,9 +25,17 @@ LOCAL_USERNAME = None
 COMMON_TEAMMATES = []
 
 def main():
+    global LOCAL_USERNAME, COMMON_TEAMMATES
+
     app = QApplication(sys.argv)
 
-    settings        = SettingsManager()
+    settings = SettingsManager()
+    # Sync the globals from disk before any signal handlers run. Without this,
+    # try_set_players_from_update would be called with local_username=None and
+    # crash on .lower() — killing the socket loop and freezing the UI.
+    LOCAL_USERNAME   = settings.settings.get("localUsername") or ""
+    COMMON_TEAMMATES = list(settings.settings.get("commonTeammates") or [])
+
     window          = MainWindow()
     session         = SessionStore()
     event_handler   = EventHandler(on_event_callback=lambda evt: handle_event(evt))
