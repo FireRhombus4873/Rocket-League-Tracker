@@ -33,12 +33,12 @@ mainWindow (PyQt6 GUI)
 - Defines `handle_event` (named events) and `handle_update_state` (the high-frequency tick) as nested functions so they can capture `window`, `session`, etc.
 - Constructs `SocketHandler` *after* the callbacks are defined to avoid `UnboundLocalError`
 - Spawns `process_watcher` on a background thread that loops forever: wait for RL → emit `settings_prompt` if no username is saved → start socket → wait for RL to close → stop socket → repeat
-- `LOCAL_USERNAME` / `COMMON_TEAMMATES` are module globals populated from `SettingsManager` via the `prompt_settings` handler (first-run prompt or gear button). The running socket loop reads them by name at call time, so updates from the settings dialog propagate without a restart.
+- `LOCAL_USERNAME` / `COMMON_TEAMMATES` are module globals. They're synced from `SettingsManager` **immediately after construction in `main()`** (not just via `prompt_settings`) — without this, `try_set_players_from_update` would be called with `local_username=None` and crash on `.lower()`, killing the socket loop. `prompt_settings` then re-syncs after the dialog so first-run / edits also take effect without a restart.
 
 ### `config.py` / `settingsManager.py` — paths + user settings
 
 - `config.py` exposes the single source of truth for filesystem paths: `BASE_DIR`, `HISTORY_DB_FILE`, `HISTORY_FILE` (legacy JSON, only used by the one-shot migration), `SETTINGS_FILE`.
-- `SettingsManager` loads/saves `settings.json`. Two keys today: `localUsername` (used by `sessionStore` to determine which team is "ours") and `commonTeammates` (a list, currently informational only — see TODO).
+- `SettingsManager` loads/saves `settings.json`. Two keys today: `localUsername` (used by `sessionStore` to determine which team is "ours") and `commonTeammates` (a list of names that are hidden from the Past Encounters card — `_on_encounters_updated` filters them out so the card highlights *new* people you've teamed with, not your usual crew).
 
 ### `socketHandler.py` — TCP listener
 
@@ -68,6 +68,8 @@ This is the most complex file. It handles four intertwined concerns:
 
 **Persistence (SQLite)**: history lives in `%LOCALAPPDATA%\FireRhombus\RocketLeagueTracker\history.db`. Four tables: `sessions`, `matches`, `players`, `match_players` — see *Data Schema* below. The DB is the source of truth; `self.match_history` is a **bounded in-memory cache of only the most recent `_cache_size` (20) matches**, oldest-first, used to feed the history table in the UI. All aggregations (`_encounter_for`, `get_session_summaries`, `_retally_active_session`) query the DB directly — they never walk the cache — so cache size has zero effect on correctness.
 
+The connection is opened with `check_same_thread=False` and every cursor access is wrapped in `self._db_lock` (a `threading.RLock`). This is required because the socket listener thread calls `record_result` / `_encounter_for` while the Qt main thread calls `delete_session` / `get_session_summaries`. If you add a new method that touches `self.cursor`, wrap its body in `with self._db_lock:` or you'll re-introduce the cross-thread crash.
+
 If a legacy `match_history.json` exists and the DB has no matches, `_maybe_migrate_from_json` ports it over once on startup and renames the file to `.bak`. Entries written before ID-tracking get a synthetic `legacy:<name>` player id; new bad rows (if `PrimaryId` is somehow empty at match end) get `unknown:<name>` — both kept distinct so `_encounter_for` knows which rows to fall back to a name match on.
 
 **Pause tracking**: when `MainWindow.is_tracking_paused()` is true, `main.py`'s `MatchEnded` handler calls `session.discard_match()` instead of `record_result()`. Players still display live during the match (the `UpdateState` flow is untouched), but no DB row is written and `wins`/`losses` stay put. The user toggles this via the checkbox in the win/loss row.
@@ -80,7 +82,7 @@ If a legacy `match_history.json` exists and the DB has no matches, `_maybe_migra
 
 ### `mainWindow.py` — GUI
 
-- Single window with: status header (status indicator + gear settings button), win/loss/ratio/streak cards, SESSIONS / NEW SESSION / PAUSE TRACKING controls, current-match player list, Past Encounters card (per-opponent W/L vs you), match history table
+- Single window with: status header (status indicator + gear settings button), win/loss/ratio/streak cards, SESSIONS / NEW SESSION / PAUSE TRACKING controls, current-match player list, Past Encounters card (per-player W/L vs you, opponents and teammates merged with a red/blue role dot — common teammates from settings are filtered out), match history table
 - Dark theme defined as constants (BG_DARK, ACCENT, etc.) at the top
 - All UI updates flow through `UISignals` (a `QObject` with `pyqtSignal`s) — background threads emit, main thread slots receive. **Never touch widgets from a background thread directly.**
 - Three modal dialogs:
@@ -158,6 +160,8 @@ History is stored in SQLite at `%LOCALAPPDATA%\FireRhombus\RocketLeagueTracker\h
 - **`match_players`** — composite PK `(match_id, player_id)`, `role` ∈ {`opponent`,`teammate`}, `name_at_match` (snapshot — preserved so renames don't rewrite history), `team_num`, stat columns. Indexed on `(player_id, role)` for fast encounter lookups.
 
 `record_result` upserts the session row (bumping `ended_at`), inserts the match, upserts each `players` row, then inserts `match_players`. `delete_session` is a single `DELETE FROM sessions WHERE id = ?` — FK cascades handle the rest.
+
+`_encounter_for` returns a dict per player with `wins`, `losses`, `encounters`, `crossEncounters` (count in the *opposite* role — lets the UI distinguish a true first meeting from "first time as a teammate but we've faced before"), `lastDate`, `lastSessionNum`, `matchesAgo`.
 
 Synthetic player ids:
 - `legacy:<name>` — written by `_maybe_migrate_from_json` for entries that predate ID tracking. `_encounter_for` falls back to a name match against these rows only.
