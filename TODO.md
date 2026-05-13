@@ -10,8 +10,8 @@
 - [ ] Export history to CSV.
 
 ## UI features
-- [ ] Render the teammate side of the Past Encounters card (data already computed in `get_current_encounters()`).
-    - [ ] Filter teammates so that common teammates are not mentioned
+- [x] Render the teammate side of the Past Encounters card (data already computed in `get_current_encounters()`).
+    - [x] Filter teammates so that common teammates are not mentioned
 - [ ] Filter / search box on the Opponent History table.
 - [ ] Highlight in the Past Encounters card when an opponent has a notable record vs you (e.g. lost 3+ in a row, or 0–5 all-time).
 - [ ] Let the user name sessions (label like "Friday duos") instead of just a number. Maybe?
