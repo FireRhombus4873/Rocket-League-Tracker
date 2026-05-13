@@ -527,8 +527,9 @@ class SessionStore():
         Matches by PrimaryId so two players sharing a display name ('.' is common)
         aren't conflated. Legacy entries imported from the JSON have synthetic
         `legacy:<name>` ids, so we OR in a name match against those rows only."""
-        role = "opponent" if list_key == "opponents" else "teammate"
-        pid  = player_id or ""
+        role     = "opponent" if list_key == "opponents" else "teammate"
+        opposite = "teammate" if role == "opponent" else "opponent"
+        pid      = player_id or ""
 
         with self._db_lock:
             self.cursor.execute("""
@@ -541,6 +542,18 @@ class SessionStore():
                 ORDER BY m.id DESC
             """, (role, pid, name))
             rows = self.cursor.fetchall()
+
+            # How many prior matches in the *other* role — used by the UI to
+            # avoid "first time facing them" when we've actually played them
+            # before, just on the opposite side.
+            self.cursor.execute("""
+                SELECT COUNT(*)
+                FROM match_players mp
+                WHERE mp.role = ?
+                  AND (mp.player_id = ?
+                       OR (mp.player_id LIKE 'legacy:%' AND mp.name_at_match = ?))
+            """, (opposite, pid, name))
+            cross_encounters = self.cursor.fetchone()[0]
 
             wins       = sum(1 for r in rows if r[3] == "win")
             losses     = sum(1 for r in rows if r[3] == "loss")
@@ -560,13 +573,14 @@ class SessionStore():
                     matches_ago = self.cursor.fetchone()[0]
 
         return {
-            "name":           name,
-            "wins":           wins,
-            "losses":         losses,
-            "encounters":     encounters,
-            "lastDate":       last_date,
-            "lastSessionNum": last_session_num,
-            "matchesAgo":     matches_ago,
+            "name":             name,
+            "wins":             wins,
+            "losses":           losses,
+            "encounters":       encounters,
+            "crossEncounters":  cross_encounters,
+            "lastDate":         last_date,
+            "lastSessionNum":   last_session_num,
+            "matchesAgo":       matches_ago,
         }
 
     def get_session_summaries(self) -> list:

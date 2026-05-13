@@ -13,16 +13,16 @@ from PyQt6.QtGui import QFont, QColor, QIcon, QAction
 # Signal bridge: lets background threads safely update the Qt UI
 # --------------------------------------------------------------------------
 class UISignals(QObject):
-    players_updated       = pyqtSignal(list, dict)  # list of player dicts, team_info dict
-    encounters_updated    = pyqtSignal(list, list)  # opponents encounters, teammates encounters
-    record_updated        = pyqtSignal(int, int)    # wins, losses
-    history_updated       = pyqtSignal(list, int)   # list of match history dicts, current session num
-    status_changed        = pyqtSignal(str)         # status bar text
-    session_prompt        = pyqtSignal(int)         # last session number, triggers dialog
-    settings_prompt       = pyqtSignal()            # user doesn't have localUsername set
-    new_session_requested = pyqtSignal()            # user clicked "New Session"
-    sessions_requested    = pyqtSignal()            # user clicked "Sessions"
-    game_started          = pyqtSignal()            # Rocket League process detected
+    players_updated       = pyqtSignal(list, dict)        # list of player dicts, team_info dict
+    encounters_updated    = pyqtSignal(list, list, list)  # opponents encounters, teammates encounters
+    record_updated        = pyqtSignal(int, int)          # wins, losses
+    history_updated       = pyqtSignal(list, int)         # list of match history dicts, current session num
+    status_changed        = pyqtSignal(str)               # status bar text
+    session_prompt        = pyqtSignal(int)               # last session number, triggers dialog
+    settings_prompt       = pyqtSignal()                  # user doesn't have localUsername set
+    new_session_requested = pyqtSignal()                  # user clicked "New Session"
+    sessions_requested    = pyqtSignal()                  # user clicked "Sessions"
+    game_started          = pyqtSignal()                  # Rocket League process detected
 
 # --------------------------------------------------------------------------
 # Colour palette
@@ -264,8 +264,7 @@ class SettingsDialog(QDialog):
         # ── Help text ───────────────────────────────────────────────────
         help_lbl = QLabel(
             "Your in-game name is used to detect which team is yours. "
-            "Common teammates may be used in future features (e.g. flagging "
-            "frequent teammates in match history)."
+            "Common teammates are filtered out in the encounters card."
         )
         help_lbl.setWordWrap(True)
         help_lbl.setStyleSheet(f"color: {SUBTEXT}; font-size: 11px;")
@@ -803,7 +802,7 @@ class MainWindow(QMainWindow):
         players_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         left_col.addWidget(players_card, stretch=2)
 
-        encounters_card = Card("Past Encounters — Opponents")
+        encounters_card = Card("Past Encounters")
         self._encounters_container = QWidget()
         self._encounters_container.setStyleSheet(f"background-color:{BG_CARD}")
         self._encounters_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -813,7 +812,7 @@ class MainWindow(QMainWindow):
         self._encounters_layout.addStretch()
         encounters_card.content_layout.addWidget(self._encounters_container, stretch=1)
         encounters_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        left_col.addWidget(encounters_card, stretch=1)
+        left_col.addWidget(encounters_card, stretch=2)
 
         middle.addLayout(left_col, stretch=3)
 
@@ -946,10 +945,15 @@ class MainWindow(QMainWindow):
 
         return section
 
-    def _on_encounters_updated(self, opponents: list, teammates: list):
-        # Teammates data is computed by sessionStore for future use; rendering
-        # for them isn't wired up yet — the card only shows opponents today.
-        _ = teammates
+    def _on_encounters_updated(self, opponents: list, teammates: list, common_teammates: list):
+        teammates = [player for player in teammates if player.get("name") not in common_teammates]
+
+        # Tag each entry with its role so _build_encounter_row can colour the
+        # badge and pick role-appropriate wording. Opponents render first.
+        combined = (
+            [{**enc, "role": "opponent"} for enc in opponents]
+            + [{**enc, "role": "teammate"} for enc in teammates]
+        )
 
         while self._encounters_layout.count():
             item = self._encounters_layout.takeAt(0)
@@ -958,18 +962,22 @@ class MainWindow(QMainWindow):
                 w.setParent(None)
                 w.deleteLater()
 
-        if not opponents:
+        if not combined:
             empty = QLabel("Waiting for match...")
             empty.setStyleSheet(f"color: {SUBTEXT}; background: transparent; padding: 8px;")
             self._encounters_layout.addWidget(empty)
         else:
-            for idx, enc in enumerate(opponents):
+            for idx, enc in enumerate(combined):
                 self._encounters_layout.addWidget(self._build_encounter_row(enc, idx))
 
         self._encounters_layout.addStretch()
         self._encounters_container.update()
 
     def _build_encounter_row(self, enc: dict, idx: int) -> QWidget:
+        role        = enc.get("role", "opponent")
+        is_opponent = role == "opponent"
+        role_colour = ACCENT if is_opponent else ACCENT2
+
         row = QFrame()
         row.setObjectName("encounterRow")
         row.setStyleSheet(
@@ -981,6 +989,13 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(10)
 
+        role_dot = QLabel("●")
+        role_dot.setStyleSheet(
+            f"color: {role_colour}; background: transparent; border: none; font-size: 14px;"
+        )
+        role_dot.setToolTip("Opponent" if is_opponent else "Teammate")
+        layout.addWidget(role_dot)
+
         name_lbl = QLabel(enc.get("name", "?"))
         name_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
         name_lbl.setStyleSheet(f"color: {TEXT}; background: transparent; border: none;")
@@ -988,8 +1003,19 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         encounters = enc.get("encounters", 0)
+        cross      = enc.get("crossEncounters", 0)
         if encounters == 0:
-            note = QLabel("First time facing them")
+            if is_opponent:
+                note_text = (
+                    f"First time facing them · {cross} as teammate{'s' if cross != 1 else ''}"
+                    if cross else "First time facing them"
+                )
+            else:
+                note_text = (
+                    f"First time as teammates · {cross} as opponent{'s' if cross != 1 else ''}"
+                    if cross else "First time playing with them"
+                )
+            note = QLabel(note_text)
             note.setStyleSheet(
                 f"color: {SUBTEXT}; background: transparent; border: none; font-style: italic;"
             )
