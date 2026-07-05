@@ -46,9 +46,13 @@ class SessionStore():
         self._local_team        = -1
         self._local_username    = ""
         self.team_info          = {}
+        self._match_recorded    = False
         # PrimaryId -> player dict; leavers are kept so their last-known
         # stats are still in the saved match entry.
         self._player_registry   = {}
+        self._match_start_secs  = None
+        self._match_last_secs   = None
+        self._match_overtime    = False
 
         # `match_history` is a bounded cache of the most recent matches
         # (oldest-first) used only to feed the history table. All aggregations
@@ -135,6 +139,10 @@ class SessionStore():
             self._local_team        = -1
             self.team_info          = {}
             self._player_registry   = {}
+            self._match_start_secs  = None
+            self._match_last_secs   = None
+            self._match_overtime    = False
+            self._match_recorded    = False
 
         # Extract team colours/names
         game = data.get("Game", {})
@@ -147,6 +155,15 @@ class SessionStore():
                 "name":  t.get("Name", f"Team {num}"),
                 "color": color or "#ffffff",
             }
+
+        time_secs = game.get("TimeSeconds")
+        if time_secs is not None:
+            if self._match_start_secs is None:
+                self._match_start_secs = time_secs   # first tick — clock near 300
+            self._match_last_secs = time_secs        # updated every tick — clock near 0
+
+        if game.get("bOvertime"):
+            self._match_overtime = True
 
         # Upsert each currently present player into the registry, keyed by
         # PrimaryId (e.g. "Steam|123|0") so duplicate names — like "." — don't
@@ -189,19 +206,33 @@ class SessionStore():
         self.current_opponents = [p for p in players if p.get("team") != local_team]
         self.current_teammates = [p for p in players if p.get("team") == local_team]
 
-    def record_result(self, winner_team: int):
+    def record_result(self):
         """
         Snapshot current_players at match end — by this point UpdateState
         will have been ticking throughout the match so stats are fully populated.
         """
         if self._local_team == -1:
             # We never matched the local username against any UpdateState
-            # player — best-effort fall back so we still record the match.
-            print("Warning: could not determine local team; defaulting to team 0")
-            local_team = 0
+            # Probably a freeplay match with no previous data set (first match not recorded), okay to skip recording
+            return
         else:
             local_team = self._local_team
 
+        def calculate_winner_team():
+            """Calculate the winner team from the current players' goals."""
+            team_goals = {}
+            for p in self.current_players:
+                team = p.get("team")
+                goals = p.get("goals", 0)
+                team_goals[team] = team_goals.get(team, 0) + goals
+            if team_goals.get(0, 0) > team_goals.get(1, 0):
+                return 0
+            elif team_goals.get(1, 0) > team_goals.get(0, 0):
+                return 1
+            else:
+                return -1
+
+        winner_team = calculate_winner_team()
         won = (winner_team == local_team)
         if won:
             self.wins += 1
@@ -216,7 +247,7 @@ class SessionStore():
                 "score":      p.get("score",      0),
                 "goals":      p.get("goals",      0),
                 "shots":      p.get("shots",      0),
-                "assists":    p.get("assists",     0),
+                "assists":    p.get("assists",    0),
                 "saves":      p.get("saves",      0),
                 "touches":    p.get("touches",    0),
                 "carTouches": p.get("carTouches", 0),
@@ -229,6 +260,10 @@ class SessionStore():
                       if p.get("platform") != "Unknown"]
         teammates  = [_player_entry(p) for p in self.current_teammates
                       if p.get("platform") != "Unknown"]
+        
+        duration = None
+        if self._match_start_secs is not None and self._match_last_secs is not None:
+            duration = max(round(self._match_start_secs - self._match_last_secs, 1), 0)
 
         with self._db_lock:
             # Ensure the session row exists; bump its ended_at to this match.
@@ -239,9 +274,9 @@ class SessionStore():
             """, (self.session_num, played_at, played_at))
 
             self.cursor.execute("""
-                INSERT INTO matches (session_id, played_at, result, winner_team)
-                VALUES (?, ?, ?, ?)
-            """, (self.session_num, played_at, result_str, winner_team))
+                INSERT INTO matches (session_id, played_at, result, winner_team, overtime, duration_secs)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (self.session_num, played_at, result_str, winner_team, self._match_overtime, duration))
             match_id = self.cursor.lastrowid
 
             for role, plist in (("opponent", opponents), ("teammate", teammates)):
@@ -281,11 +316,19 @@ class SessionStore():
         if len(self.match_history) > self._cache_size:
             self.match_history = self.match_history[-self._cache_size:]
 
-        self.current_opponents  = []
-        self.current_teammates  = []
-        self.current_players    = []
-        self._player_registry   = {}
-        self._seen_player_count = 0
+        self.current_opponents      = []
+        self.current_teammates      = []
+        self.current_players        = []
+        self._player_registry       = {}
+        self._seen_player_count     = 0
+        self._match_start_secs  = None
+        self._match_last_secs   = None
+        self._match_overtime    = False
+        self._match_recorded    = True
+
+    def result_recorded(self):
+        """Return True when the current match has already been recorded."""
+        return self._match_recorded
 
     def delete_session(self, session_num: int):
         """Remove all matches for the given session from the database and re-tally
@@ -299,11 +342,15 @@ class SessionStore():
 
     def discard_match(self):
         """Reset per-match state without writing to history or touching wins/losses."""
-        self.current_opponents  = []
-        self.current_teammates  = []
-        self.current_players    = []
-        self._player_registry   = {}
-        self._seen_player_count = 0
+        self.current_opponents      = []
+        self.current_teammates      = []
+        self.current_players        = []
+        self._player_registry       = {}
+        self._seen_player_count     = 0
+        self._match_start_secs      = None
+        self._match_last_secs       = None
+        self._match_overtime        = False
+        self._match_recorded        = False
 
     # ------------------------------------------------------------------
     # Persistence
@@ -313,6 +360,9 @@ class SessionStore():
         """Create tables/indexes if they don't yet exist. Idempotent — safe to
         run on every launch."""
         with self._db_lock:
+            self.cursor.execute("PRAGMA user_version")
+            version = self.cursor.fetchone()[0]
+
             self.cursor.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
                 id         INTEGER PRIMARY KEY,
@@ -357,9 +407,16 @@ class SessionStore():
             );
             CREATE INDEX IF NOT EXISTS idx_match_players_player_role
                 ON match_players(player_id, role);
-
-            PRAGMA user_version = 1;
             """)
+            if version < 1:
+                self.cursor.execute("PRAGMA user_version = 1")
+                
+            if version < 2:
+                self.cursor.executescript("""
+                    ALTER TABLE matches ADD COLUMN overtime INTEGER DEFAULT 0;
+                    ALTER TABLE matches ADD COLUMN duration_secs REAL;
+                    PRAGMA user_version = 2;
+                """)
             self.conn.commit()
 
     def _maybe_migrate_from_json(self):
