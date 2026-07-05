@@ -16,3 +16,6 @@
 - [ ] Highlight in the Past Encounters card when an opponent has a notable record vs you (e.g. lost 3+ in a row, or 0–5 all-time).
 - [ ] Let the user name sessions (label like "Friday duos") instead of just a number. Maybe?
 - [ ] Per-team totals row in `MatchStatsDialog`.
+
+## Bugs
+- [ ] When forfeiting a match when the goals are even. Currently the match winner is handled using the team with the most goals, but this is not foolproof. If team 1 with 4 goals forfeits to team 2 with 2 goals, then team 1 will be counted as the winner. Not sure how to fix this yet, gonna have to think on it.
