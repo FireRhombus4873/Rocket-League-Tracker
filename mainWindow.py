@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import webbrowser
+from urllib.parse import quote
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -78,6 +80,25 @@ class Card(QFrame):
 # --------------------------------------------------------------------------
 # Match Stats Dialog
 # --------------------------------------------------------------------------
+
+# ------------------------------------
+# Mouse cursor change for name column
+# ------------------------------------
+class NameColumnCursor(QObject):
+    def __init__(self, table, name_col=0):
+        super().__init__(table)
+        self.table = table
+        self.name_col = name_col
+
+    def eventFilter(self, obj, event):
+        if event.type() == event.Type.MouseMove:
+            index = self.table.indexAt(event.pos())
+            if index.isValid() and index.column() == self.name_col:
+                self.table.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                self.table.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+        return False
+
 class MatchStatsDialog(QDialog):
     def __init__(self, entry: dict, parent=None):
         super().__init__(parent)
@@ -155,6 +176,25 @@ class MatchStatsDialog(QDialog):
         table.setAlternatingRowColors(True)
         table.setStyleSheet(table.styleSheet() + f"QTableWidget {{ alternate-background-color: #1a2030; }}")
 
+        def tracker_platform_slug(platform: str) -> str:
+            mapping = {
+                "epic": "epic",
+                "steam": "steam",
+                "psn": "psn",
+                "ps4": "psn",
+                "ps5": "psn",
+                "playstation": "psn",
+                "xbl": "xbl",
+                "xbox": "xbl",
+                "switch": "switch",
+            }
+            return mapping.get(platform.lower(), platform.lower())
+        
+        def tracker_url(platform: str, name: str) -> str:
+            slug = tracker_platform_slug(platform)
+            encoded_name = quote(name)
+            return f"https://rocketleague.tracker.network/rocket-league/profile/{slug}/{encoded_name}/overview"
+
         def add_player(player: dict, side: str, side_colour: str):
             row = table.rowCount()
             table.insertRow(row)
@@ -175,12 +215,41 @@ class MatchStatsDialog(QDialog):
             for col, (text, colour) in enumerate(values):
                 item = QTableWidgetItem(text)
                 item.setForeground(QColor(colour))
+                if col == 0:
+                    font = item.font()
+                    font.setUnderline(True)
+                    item.setFont(font)
+                    item.setForeground(QColor(side_colour))
+                    item.setData(Qt.ItemDataRole.UserRole, player)
+                    item.setToolTip("Click to open Rocket League Tracker profile")
                 table.setItem(row, col, item)
 
         for p in entry.get("teammates", []):
             add_player(p, "Teammate", ACCENT2)
         for p in entry.get("opponents", []):
             add_player(p, "Opponent", ACCENT)
+
+        def on_cell_clicked(row, column):
+            if column != 0:
+                return
+            item = table.item(row, 0)
+            player = item.data(Qt.ItemDataRole.UserRole)
+            if not player:
+                return
+            platform = player.get("platform", "")
+            name = player.get("name", "")
+            if not platform or not name:
+                return
+            if platform.lower() == "steam":
+                name = player.get("id").split("|")[1]  # use Steam ID for tracker URL
+            url = tracker_url(platform, name)
+            webbrowser.open(url)
+
+        table.cellClicked.connect(on_cell_clicked)
+        cursor_filter = NameColumnCursor(table)
+        table.viewport().installEventFilter(cursor_filter)
+        table.setMouseTracking(True)
+        table.setCursor(Qt.CursorShape.PointingHandCursor)
 
         layout.addWidget(table)
 
