@@ -55,8 +55,8 @@ def main():
             window.signals.status_changed.emit("Match in progress")
 
     def handle_event(event: dict):
-        def record_result():
-            session.record_result()
+        def record_result(winner: int = None):
+            session.record_result(winner_team=winner)
             _refresh_record(window, session)
             _refresh_history(window, session)
 
