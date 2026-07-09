@@ -206,7 +206,7 @@ class SessionStore():
         self.current_opponents = [p for p in players if p.get("team") != local_team]
         self.current_teammates = [p for p in players if p.get("team") == local_team]
 
-    def record_result(self):
+    def record_result(self, winner_team: int = None):
         """
         Snapshot current_players at match end — by this point UpdateState
         will have been ticking throughout the match so stats are fully populated.
@@ -231,8 +231,11 @@ class SessionStore():
                 return 1
             else:
                 return -1
+            
+        # If winner_team is not provided (When leaving before the MatchEnded event is called), calculate it from the teams goals.
+        if winner_team is None:
+            winner_team = calculate_winner_team()
 
-        winner_team = calculate_winner_team()
         won = (winner_team == local_team)
         if won:
             self.wins += 1

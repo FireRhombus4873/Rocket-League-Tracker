@@ -60,6 +60,14 @@ def main():
             _refresh_record(window, session)
             _refresh_history(window, session)
 
+        def get_winner(event: dict) -> int:
+            winner = event.get("MatchEnded")
+            try:
+                winner_int = int(winner)
+            except (ValueError, TypeError):
+                winner_int = -1
+            return winner_int
+
         if "MatchInitialised" in event:
             window.signals.status_changed.emit("Match initialising...")
 
@@ -70,12 +78,15 @@ def main():
                 window.signals.encounters_updated.emit([], [], [])
                 window.signals.status_changed.emit("Match ended — tracking paused (not saved)")
             else:
-                record_result()
+                # Winner is easily determined from the MatchEnded event
+                winner = get_winner(event)
+                record_result(winner)
                 window.signals.players_updated.emit([], {})
                 window.signals.encounters_updated.emit([], [], [])
                 window.signals.status_changed.emit("Match ended — waiting for next match")
 
         elif "MatchDestroyed" in event:
+            # If the user leaves the match before the MatchEnded event is called, we can't provide a definitive winner
             if not session.result_recorded():
                 record_result()
             window.signals.players_updated.emit([], {})

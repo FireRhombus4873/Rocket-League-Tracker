@@ -18,4 +18,3 @@
 - [ ] Per-team totals row in `MatchStatsDialog`.
 
 ## Bugs
-- [ ] When forfeiting a match when the goals are even. Currently the match winner is handled using the team with the most goals, but this is not foolproof. If team 1 with 4 goals forfeits to team 2 with 2 goals, then team 1 will be counted as the winner. Not sure how to fix this yet, gonna have to think on it.
