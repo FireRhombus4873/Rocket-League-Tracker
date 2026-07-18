@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import webbrowser
+import datetime
 from urllib.parse import quote
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -714,7 +715,7 @@ class MainWindow(QMainWindow):
 
         # Match history
         history_card = Card("Match History")
-        self._history_table = self._make_table(["Session", "Date", "Result", "Opponents", "Teammates"])
+        self._history_table = self._make_table(["Session", "Date", "Result", "Score", "Opponents", "Teammates"])
         history_card.content_layout.addWidget(self._history_table)
         history_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         middle.addWidget(history_card, stretch=4)
@@ -1090,23 +1091,29 @@ class MainWindow(QMainWindow):
             opp_str  = fmt_players(entry.get("opponents", []))
             team_str = fmt_players(entry.get("teammates", []))
 
+            opp_goals  = sum(p.get("goals", 0) for p in entry.get("opponents", []))
+            team_goals = sum(p.get("goals", 0) for p in entry.get("teammates", []))
+
             session_item = QTableWidgetItem(session_num)
-            date_item    = QTableWidgetItem(date_str)
+            date_item    = QTableWidgetItem(datetime.date.fromisoformat(date_str).strftime("%d, %B %Y"))
             result_item  = QTableWidgetItem(result)
+            score_item   = QTableWidgetItem(str(team_goals) + " – " + str(opp_goals))
             opp_item     = QTableWidgetItem(opp_str)
             team_item    = QTableWidgetItem(team_str)
 
             session_item.setForeground(QColor(ACCENT2))
             date_item.setForeground(QColor(SUBTEXT))
             result_item.setForeground(QColor(WIN_CLR if result == "WIN" else LOSS_CLR))
+            score_item.setForeground(QColor(TEXT))
             opp_item.setForeground(QColor(TEXT))
             team_item.setForeground(QColor(SUBTEXT))
 
             t.setItem(row, 0, session_item)
             t.setItem(row, 1, date_item)
             t.setItem(row, 2, result_item)
-            t.setItem(row, 3, opp_item)
-            t.setItem(row, 4, team_item)
+            t.setItem(row, 3, score_item)
+            t.setItem(row, 4, opp_item)
+            t.setItem(row, 5, team_item)
 
     def _update_streak(self, history: list, session_num: int):
         streak = 0
