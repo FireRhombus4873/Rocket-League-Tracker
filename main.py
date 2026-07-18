@@ -14,7 +14,7 @@ import sys
 import threading
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from mainWindow      import MainWindow, SessionSummaryDialog, SettingsDialog
+from mainWindow      import MainWindow, SettingsDialog
 from settingsManager import SettingsManager
 from eventHandler    import EventHandler
 from socketHandler   import SocketHandler
@@ -43,6 +43,7 @@ def main():
 
     _refresh_history(window, session)
     _refresh_record(window, session)
+    _refresh_sessions(window, session)
 
     def handle_update_state(data: dict):
         fresh = session.try_set_players_from_update(data, local_username=LOCAL_USERNAME)
@@ -59,6 +60,7 @@ def main():
             session.record_result(winner_team=winner)
             _refresh_record(window, session)
             _refresh_history(window, session)
+            _refresh_sessions(window, session)
 
         def get_winner(event: dict) -> int:
             winner = event.get("MatchEnded")
@@ -185,26 +187,19 @@ def main():
             session.new_session()
             _refresh_record(window, session)
             _refresh_history(window, session)
+            _refresh_sessions(window, session)
 
-    def on_sessions_requested():
-        def delete_and_refresh(num: int) -> list:
-            session.delete_session(num)
-            _refresh_record(window, session)
-            _refresh_history(window, session)
-            return session.get_session_summaries()
-
-        dlg = SessionSummaryDialog(
-            session.get_session_summaries(),
-            parent=window,
-            on_delete=delete_and_refresh,
-        )
-        dlg.exec()
+    def on_session_delete_requested(num: int):
+        session.delete_session(num)
+        _refresh_record(window, session)
+        _refresh_history(window, session)
+        _refresh_sessions(window, session)
 
     # Wire the session prompt signal to our handler
     window.signals.session_prompt.connect(prompt_session)
     window.signals.settings_prompt.connect(prompt_settings)
     window.signals.new_session_requested.connect(on_new_session_requested)
-    window.signals.sessions_requested.connect(on_sessions_requested)
+    window.signals.session_delete_requested.connect(on_session_delete_requested)
 
     threading.Thread(target=process_watcher, daemon=True).start()
     sys.exit(app.exec())
@@ -215,6 +210,9 @@ def _refresh_record(window: MainWindow, session: SessionStore):
 
 def _refresh_history(window: MainWindow, session: SessionStore):
     window.signals.history_updated.emit(session.get_recent_opponents(20), session.session_num)
+
+def _refresh_sessions(window: MainWindow, session: SessionStore):
+    window.signals.sessions_updated.emit(session.get_session_summaries())
 
 
 if __name__ == "__main__":

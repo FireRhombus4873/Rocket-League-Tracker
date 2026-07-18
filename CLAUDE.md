@@ -86,12 +86,14 @@ If a legacy `match_history.json` exists and the DB has no matches, `_maybe_migra
 
 ### `mainWindow.py` — GUI
 
-- Single window with: status header (status indicator + gear settings button), win/loss/ratio/streak cards, SESSIONS / NEW SESSION / PAUSE TRACKING controls, current-match player list, Past Encounters card (per-player W/L vs you, opponents and teammates merged with a red/blue role dot — common teammates from settings are filtered out), match history table
-- Dark theme defined as constants (BG_DARK, ACCENT, etc.) at the top
-- All UI updates flow through `UISignals` (a `QObject` with `pyqtSignal`s) — background threads emit, main thread slots receive. **Never touch widgets from a background thread directly.**
-- Three modal dialogs:
+- A persistent header (status indicator + gear settings button) sits above a `QTabWidget` (`self._tabs`) with three top-level tabs. Each tab is built by its own `_build_*_tab()` method returning a `QWidget`; the header is built by `_build_header()`. The status bar spans all tabs.
+  - **Tracker** — win/loss/ratio/streak cards, NEW SESSION / PAUSE TRACKING controls, current-match player list, Past Encounters card (per-player W/L vs you, opponents and teammates merged with a red/blue role dot — common teammates from settings are filtered out), and the match history table.
+  - **Sessions** — one row per session (dates, matches, W/L, win %, best-win/worst-loss streaks) with a totals header. Selecting a row enables **Delete Session**, which confirms then emits `session_delete_requested`; `main.py` performs the delete and re-emits `sessions_updated` to re-render. This replaced the old modal `SessionSummaryDialog` and the standalone SESSIONS button.
+  - **Analytics** — placeholder card listing planned views (win rate over time, stat averages, overtime/duration, time-of-day performance, opponent/teammate breakdowns, match comparison). No live data yet.
+- Dark theme defined as constants (BG_DARK, ACCENT, etc.) at the top; `QTabWidget`/`QTabBar` styling lives in `_apply_styles`.
+- All UI updates flow through `UISignals` (a `QObject` with `pyqtSignal`s) — background threads emit, main thread slots receive. **Never touch widgets from a background thread directly.** The Sessions tab is fed by `sessions_updated(list)` (emitted from `main.py`'s `_refresh_sessions` after startup, record, new-session, and delete) and drives deletes back via `session_delete_requested(int)`.
+- Two modal dialogs remain:
   - `MatchStatsDialog` — opened by clicking a history row; shows per-player stats for that match. Each player's **name cell is a clickable link** (underlined, coloured by role, pointing-hand cursor via the `NameColumnCursor` event filter) that opens their Rocket League Tracker profile in the default browser (`https://rocketleague.tracker.network/rocket-league/profile/<slug>/<id-or-name>/overview`). `tracker_platform_slug` maps our platform strings to tracker slugs (`ps4`/`ps5`/`playstation` → `psn`, `xbox`/`xbl` → `xbl`, etc.). For Steam the URL uses the numeric account ID pulled from `PrimaryId` (`id.split("|")[1]`); other platforms use the display name (URL-encoded).
-  - `SessionSummaryDialog` — opened by the SESSIONS button; one row per session with delete + confirm
   - `SettingsDialog` — opened by the gear button or auto-prompted on first run when no username is saved
 - System tray icon allows minimise-to-tray behaviour for autostart use
 
