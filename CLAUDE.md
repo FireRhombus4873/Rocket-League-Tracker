@@ -74,6 +74,10 @@ If a legacy `match_history.json` exists and the DB has no matches, `_maybe_migra
 
 **Pause tracking**: when `MainWindow.is_tracking_paused()` is true, `main.py`'s `MatchEnded` handler calls `session.discard_match()` instead of `record_result()`. Players still display live during the match (the `UpdateState` flow is untouched), but no DB row is written and `wins`/`losses` stay put. The user toggles this via the checkbox in the win/loss row.
 
+**Winner determination & the leaver problem**: two events can end a match. `MatchEnded` carries the authoritative winning team number, so `main.py` parses it (`get_winner`, defaulting to `-1` on a bad/missing value) and passes it as `record_result(winner_team=...)`. But if the user *leaves before* `MatchEnded` fires, only `MatchDestroyed` arrives — with no winner — so that handler calls `record_result()` with no argument. When `winner_team` is `None`, `record_result` falls back to `calculate_winner_team()`, which infers the winner by summing each team's goals from the last known player stats. A `_match_recorded` flag (exposed via `result_recorded()`) guards against double-recording: `MatchDestroyed` only records if `MatchEnded` hasn't already. `record_result` also **skips recording entirely when `_local_team == -1`** (we never matched the local username against any player — typically freeplay with no roster), rather than the old behaviour of defaulting to team 0.
+
+**Match duration & overtime**: every `UpdateState` tick reads `Game.TimeSeconds` (the clock, which counts *down* from ~300) into `_match_start_secs` (first tick) and `_match_last_secs` (latest tick); `Game.bOvertime` latches `_match_overtime` to `True`. At record time, `duration_secs = max(start - last, 0)` and the overtime flag are written to the `matches` row. All of this per-match state is reset on a new GUID, on `record_result`, and on `discard_match`.
+
 ### `processHandler.py` — process detection
 
 - `wait_for_game()` polls `psutil` every 2s for `RocketLeague.exe`
@@ -86,7 +90,7 @@ If a legacy `match_history.json` exists and the DB has no matches, `_maybe_migra
 - Dark theme defined as constants (BG_DARK, ACCENT, etc.) at the top
 - All UI updates flow through `UISignals` (a `QObject` with `pyqtSignal`s) — background threads emit, main thread slots receive. **Never touch widgets from a background thread directly.**
 - Three modal dialogs:
-  - `MatchStatsDialog` — opened by clicking a history row; shows per-player stats for that match
+  - `MatchStatsDialog` — opened by clicking a history row; shows per-player stats for that match. Each player's **name cell is a clickable link** (underlined, coloured by role, pointing-hand cursor via the `NameColumnCursor` event filter) that opens their Rocket League Tracker profile in the default browser (`https://rocketleague.tracker.network/rocket-league/profile/<slug>/<id-or-name>/overview`). `tracker_platform_slug` maps our platform strings to tracker slugs (`ps4`/`ps5`/`playstation` → `psn`, `xbox`/`xbl` → `xbl`, etc.). For Steam the URL uses the numeric account ID pulled from `PrimaryId` (`id.split("|")[1]`); other platforms use the display name (URL-encoded).
   - `SessionSummaryDialog` — opened by the SESSIONS button; one row per session with delete + confirm
   - `SettingsDialog` — opened by the gear button or auto-prompted on first run when no username is saved
 - System tray icon allows minimise-to-tray behaviour for autostart use
@@ -113,7 +117,7 @@ The interaction between `_player_registry`, `_seen_player_count`, and the "shoul
 2. Late joiner mid-match — should refresh UI
 3. Stats updating during play (no roster change) — should NOT refresh UI but MUST update stats
 4. Player leaves mid-match — should keep their stats in the registry
-5. Match ends — `record_result` writes to the DB and trims the cache; or, when tracking is paused, `discard_match` clears the registry without writing
+5. Match ends — `record_result` writes to the DB and trims the cache (via `MatchEnded` with a known winner, or `MatchDestroyed` with a goal-inferred winner if the user left first); or, when tracking is paused, `discard_match` clears the registry without writing
 
 If a change breaks any of these, stats won't get recorded correctly — and silent data corruption is the worst kind of bug here.
 
@@ -152,10 +156,10 @@ Project follows semver. Currently in pre-1.0 — schema and core behaviour can s
 
 ## Data Schema
 
-History is stored in SQLite at `%LOCALAPPDATA%\FireRhombus\RocketLeagueTracker\history.db`. The schema is created/maintained by `SessionStore._initDatabase` and stamped with `PRAGMA user_version` (currently `1`):
+History is stored in SQLite at `%LOCALAPPDATA%\FireRhombus\RocketLeagueTracker\history.db`. The schema is created/maintained by `SessionStore._initDatabase` and stamped with `PRAGMA user_version` (currently `2`):
 
 - **`sessions`** — `id` PK (matches `session_num`), `name` (nullable, reserved for the labelled-sessions TODO), `started_at`, `ended_at`
-- **`matches`** — `id` autoincrement PK, `session_id` FK ON DELETE CASCADE, `played_at`, `result` ∈ {`win`,`loss`}, `winner_team`
+- **`matches`** — `id` autoincrement PK, `session_id` FK ON DELETE CASCADE, `played_at`, `result` ∈ {`win`,`loss`}, `winner_team`, `overtime` (INTEGER 0/1, added in v2), `duration_secs` (REAL, added in v2; nullable when the clock couldn't be read)
 - **`players`** — `id` PK = full `PrimaryId`, `name` (most recently seen), `platform`, `first_seen`, `last_seen`. Canonical identity.
 - **`match_players`** — composite PK `(match_id, player_id)`, `role` ∈ {`opponent`,`teammate`}, `name_at_match` (snapshot — preserved so renames don't rewrite history), `team_num`, stat columns. Indexed on `(player_id, role)` for fast encounter lookups.
 
@@ -175,4 +179,4 @@ The legacy JSON shape (still readable by `_maybe_migrate_from_json`) was:
   "teammates": [ /* same shape */ ] }
 ```
 
-When evolving the schema, bump `user_version` and add an idempotent upgrade step in `_initDatabase` (or a dedicated migration helper). Existing DBs in users' `%LOCALAPPDATA%` won't have the new columns — use `ALTER TABLE … ADD COLUMN` with safe defaults rather than failing hard.
+When evolving the schema, bump `user_version` and add an idempotent upgrade step in `_initDatabase` (or a dedicated migration helper). `_initDatabase` reads the current `user_version` up front, always runs the `CREATE TABLE IF NOT EXISTS` block, then applies version-gated upgrade blocks — e.g. the v2 step is `if version < 2:` → `ALTER TABLE matches ADD COLUMN …` then `PRAGMA user_version = 2`. Follow that pattern for the next bump. Existing DBs in users' `%LOCALAPPDATA%` won't have the new columns — use `ALTER TABLE … ADD COLUMN` with safe defaults rather than failing hard.
