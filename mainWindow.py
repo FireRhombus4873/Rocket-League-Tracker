@@ -712,8 +712,8 @@ class MainWindow(QMainWindow):
 
         middle.addLayout(left_col, stretch=3)
 
-        # Opponent history
-        history_card = Card("Opponent History")
+        # Match history
+        history_card = Card("Match History")
         self._history_table = self._make_table(["Session", "Date", "Result", "Opponents", "Teammates"])
         history_card.content_layout.addWidget(self._history_table)
         history_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
