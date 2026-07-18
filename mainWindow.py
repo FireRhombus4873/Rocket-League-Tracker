@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
     QFrame, QSizePolicy, QDialog, QPushButton, QCheckBox,
-    QSystemTrayIcon, QMenu, QMessageBox, QTabWidget
+    QSystemTrayIcon, QMenu, QMessageBox, QTabWidget, QGraphicsDropShadowEffect
 )
 from PyQt6.QtCore import pyqtSignal, QObject, Qt, QSize
 from PyQt6.QtGui import QFont, QColor, QIcon, QAction
@@ -29,18 +29,49 @@ class UISignals(QObject):
     game_started             = pyqtSignal()                # Rocket League process detected
 
 # --------------------------------------------------------------------------
-# Colour palette
+# Design tokens — a calm, modern dark theme.
+# Depth comes from low-contrast elevation (surfaces + soft shadows) rather
+# than hard 1px borders, and colour is used sparingly as an accent.
 # --------------------------------------------------------------------------
-BG_DARK   = "#0d1117"
-BG_CARD   = "#161b22"
-BG_TABLE  = "#1c2128"
-ACCENT    = "#ff4655"   # Rocket League-ish red
-ACCENT2   = "#00aaff"   # blue for team 1
-TEXT      = "#e6edf3"
-SUBTEXT   = "#7d8590"
-WIN_CLR   = "#3fb950"
-LOSS_CLR  = "#f85149"
-BORDER    = "#30363d"
+# Surfaces
+BG_DARK   = "#0e1015"   # app background (soft near-black)
+BG_CARD   = "#171b23"   # elevated card surface
+BG_TABLE  = "#12151c"   # recessed / inset surface (tables, wells)
+BG_ALT    = "#1b202a"   # subtle alternating fill / row stripe
+BG_HOVER  = "#232a35"   # hover state
+
+# Text
+TEXT      = "#e8ebf1"
+SUBTEXT   = "#8a92a2"
+FAINT     = "#5b6373"   # tertiary / captions
+
+# Accents (used sparingly)
+ACCENT    = "#f2555f"   # Rocket League red — brand cue
+ACCENT2   = "#4f9dea"   # calm blue
+WIN_CLR   = "#41c46b"
+LOSS_CLR  = "#ef5f6b"
+
+# Lines
+BORDER      = "#242a35"  # subtle hairline
+BORDER_SOFT = "#1c222c"  # barely-there separators
+SELECT_BG   = "#1e3a5f"  # row selection
+
+# Type — clean system sans, no monospace
+FONT_UI   = '"Segoe UI Variable Text", "Segoe UI", "Inter", sans-serif'
+FONT_HEAD = '"Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", sans-serif'
+
+
+def soft_shadow(widget, *, blur=28, y_offset=6, alpha=90):
+    """Attach a subtle drop shadow so surfaces lift off the background.
+    Qt stylesheets can't do box-shadow, so we use a graphics effect."""
+    effect = QGraphicsDropShadowEffect(widget)
+    effect.setBlurRadius(blur)
+    effect.setXOffset(0)
+    effect.setYOffset(y_offset)
+    effect.setColor(QColor(0, 0, 0, alpha))
+    widget.setGraphicsEffect(effect)
+    return effect
+
 
 PLATFORM_ICONS = {
     "steam":   "🖥",
@@ -59,24 +90,29 @@ def platform_icon(platform: str) -> str:
 class Card(QFrame):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
+        self.setObjectName("card")
         self.setStyleSheet(f"""
-            QFrame {{
+            QFrame#card {{
                 background-color: {BG_CARD};
-                border: 1px solid {BORDER};
-                border-radius: 8px;
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 14px;
             }}
         """)
+        soft_shadow(self, blur=32, y_offset=8, alpha=70)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(22, 18, 22, 20)
+        layout.setSpacing(14)
 
         header = QLabel(title.upper())
-        header.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-        header.setStyleSheet(f"color: {SUBTEXT}; background: transparent; border: none;")
+        header.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        header.setStyleSheet(
+            f"color: {SUBTEXT}; background: transparent; border: none; "
+            f"letter-spacing: 1.5px;"
+        )
         layout.addWidget(header)
 
         self.content_layout = QVBoxLayout()
-        self.content_layout.setSpacing(6)
+        self.content_layout.setSpacing(8)
         layout.addLayout(self.content_layout)
 
 # --------------------------------------------------------------------------
@@ -105,42 +141,42 @@ class MatchStatsDialog(QDialog):
     def __init__(self, entry: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Match Stats")
-        self.setMinimumSize(1000, 420)
+        self.setMinimumSize(1022, 428)
         self.setStyleSheet(f"""
             QDialog, QWidget {{
                 background-color: {BG_DARK};
                 color: {TEXT};
-                font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+                font-family: {FONT_UI};
                 font-size: 13px;
             }}
             QTableWidget {{
                 background-color: {BG_TABLE};
-                border: 1px solid {BORDER};
-                border-radius: 6px;
-                gridline-color: {BORDER};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+                gridline-color: transparent;
                 color: {TEXT};
             }}
-            QTableWidget::item {{ padding: 6px 10px; }}
-            QTableWidget::item:selected {{ background-color: #264f78; }}
+            QTableWidget::item {{ padding: 9px 12px; border: none; }}
+            QTableWidget::item:selected {{ background-color: {SELECT_BG}; }}
             QHeaderView::section {{
-                background-color: {BG_CARD};
-                color: {SUBTEXT};
+                background-color: transparent;
+                color: {FAINT};
                 border: none;
-                border-bottom: 1px solid {BORDER};
-                padding: 6px 10px;
-                font-size: 11px;
-                text-transform: uppercase;
-                letter-spacing: 1px;
+                border-bottom: 1px solid {BORDER_SOFT};
+                padding: 10px 12px;
+                font-size: 10px;
+                font-weight: bold;
+                letter-spacing: 0.5px;
             }}
             QPushButton {{
                 background-color: {BG_CARD};
                 color: {TEXT};
                 border: 1px solid {BORDER};
-                border-radius: 6px;
-                padding: 6px 18px;
+                border-radius: 8px;
+                padding: 8px 20px;
                 font-size: 13px;
             }}
-            QPushButton:hover {{ background-color: #21262d; }}
+            QPushButton:hover {{ background-color: {BG_HOVER}; border-color: {SUBTEXT}; }}
         """)
 
         result  = entry.get("result", "?").upper()
@@ -149,18 +185,26 @@ class MatchStatsDialog(QDialog):
         result_colour = WIN_CLR if result == "WIN" else LOSS_CLR
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 16, 20, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(26, 22, 26, 22)
+        layout.setSpacing(18)
 
         # ── Header ──────────────────────────────────────────────────────
         header = QHBoxLayout()
-        title_lbl = QLabel(f"SESSION {session}  ·  {date}")
-        title_lbl.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
-        title_lbl.setStyleSheet(f"color: {ACCENT2};")
+        header.setSpacing(10)
+        title_lbl = QLabel(f"Session {session}")
+        title_lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.DemiBold))
+        title_lbl.setStyleSheet(f"color: {TEXT};")
+        date_lbl = QLabel(date)
+        date_lbl.setFont(QFont("Segoe UI", 12))
+        date_lbl.setStyleSheet(f"color: {SUBTEXT};")
         result_lbl = QLabel(result)
-        result_lbl.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
-        result_lbl.setStyleSheet(f"color: {result_colour};")
+        result_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        result_lbl.setStyleSheet(
+            f"color: {result_colour}; background-color: {result_colour}22; "
+            f"border-radius: 11px; padding: 5px 16px; letter-spacing: 1px;"
+        )
         header.addWidget(title_lbl)
+        header.addWidget(date_lbl)
         header.addStretch()
         header.addWidget(result_lbl)
         layout.addLayout(header)
@@ -176,7 +220,9 @@ class MatchStatsDialog(QDialog):
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         table.setAlternatingRowColors(True)
-        table.setStyleSheet(table.styleSheet() + f"QTableWidget {{ alternate-background-color: #1a2030; }}")
+        table.verticalHeader().setDefaultSectionSize(38)
+        table.setShowGrid(False)
+        table.setStyleSheet(table.styleSheet() + f"QTableWidget {{ alternate-background-color: {BG_ALT}; }}")
 
         def tracker_platform_slug(platform: str) -> str:
             mapping = {
@@ -277,37 +323,37 @@ class SettingsDialog(QDialog):
             QDialog, QWidget {{
                 background-color: {BG_DARK};
                 color: {TEXT};
-                font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+                font-family: {FONT_UI};
                 font-size: 13px;
             }}
             QLineEdit {{
                 background-color: {BG_TABLE};
                 color: {TEXT};
                 border: 1px solid {BORDER};
-                border-radius: 4px;
-                padding: 6px 8px;
-                selection-background-color: #264f78;
+                border-radius: 8px;
+                padding: 9px 12px;
+                selection-background-color: {SELECT_BG};
             }}
             QLineEdit:focus {{ border-color: {ACCENT2}; }}
             QPushButton {{
                 background-color: {BG_CARD};
                 color: {TEXT};
                 border: 1px solid {BORDER};
-                border-radius: 6px;
-                padding: 6px 18px;
+                border-radius: 8px;
+                padding: 8px 20px;
                 font-size: 13px;
             }}
-            QPushButton:hover {{ background-color: #21262d; }}
+            QPushButton:hover {{ background-color: {BG_HOVER}; border-color: {SUBTEXT}; }}
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 16, 20, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(26, 22, 26, 22)
+        layout.setSpacing(18)
 
         # ── Header ──────────────────────────────────────────────────────
-        title_lbl = QLabel("SETTINGS")
-        title_lbl.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
-        title_lbl.setStyleSheet(f"color: {ACCENT2}; letter-spacing: 2px;")
+        title_lbl = QLabel("Settings")
+        title_lbl.setFont(QFont("Segoe UI", 16, QFont.Weight.DemiBold))
+        title_lbl.setStyleSheet(f"color: {TEXT};")
         layout.addWidget(title_lbl)
 
         # ── Form ────────────────────────────────────────────────────────
@@ -458,68 +504,89 @@ class MainWindow(QMainWindow):
             QMainWindow, QWidget {{
                 background-color: {BG_DARK};
                 color: {TEXT};
-                font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+                font-family: {FONT_UI};
                 font-size: 13px;
             }}
             QTableWidget {{
-                background-color: {BG_TABLE};
-                border: 1px solid {BORDER};
-                border-radius: 6px;
-                gridline-color: {BORDER};
-                color: {TEXT};
-            }}
-            QTableWidget::item {{ padding: 6px 10px; }}
-            QTableWidget::item:selected {{
-                background-color: #264f78;
-            }}
-            QHeaderView::section {{
-                background-color: {BG_CARD};
-                color: {SUBTEXT};
+                background-color: transparent;
                 border: none;
-                border-bottom: 1px solid {BORDER};
-                padding: 6px 10px;
-                font-size: 11px;
-                text-transform: uppercase;
-                letter-spacing: 1px;
+                gridline-color: transparent;
+                color: {TEXT};
+                outline: none;
+            }}
+            QTableWidget::item {{ padding: 9px 12px; border: none; }}
+            QTableWidget::item:selected {{
+                background-color: {SELECT_BG};
+            }}
+            QHeaderView {{ background: transparent; }}
+            QHeaderView::section {{
+                background-color: transparent;
+                color: {FAINT};
+                border: none;
+                border-bottom: 1px solid {BORDER_SOFT};
+                padding: 8px 12px;
+                font-size: 10px;
+                font-weight: bold;
+                letter-spacing: 0.5px;
             }}
             QScrollBar:vertical {{
-                background: {BG_DARK};
-                width: 8px;
-                border-radius: 4px;
+                background: transparent;
+                width: 10px;
+                margin: 2px 0 2px 0;
             }}
             QScrollBar::handle:vertical {{
                 background: {BORDER};
                 border-radius: 4px;
+                min-height: 32px;
             }}
+            QScrollBar::handle:vertical:hover {{ background: {FAINT}; }}
+            QScrollBar:horizontal {{
+                background: transparent;
+                height: 10px;
+                margin: 0 2px 0 2px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: {BORDER};
+                border-radius: 4px;
+                min-width: 32px;
+            }}
+            QScrollBar::handle:horizontal:hover {{ background: {FAINT}; }}
+            QScrollBar::add-line, QScrollBar::sub-line {{
+                width: 0; height: 0; background: transparent; border: none;
+            }}
+            QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
             QLabel {{ background: transparent; }}
-            QStatusBar {{ color: {SUBTEXT}; font-size: 11px; }}
-            QTabWidget::pane {{
+            QToolTip {{
+                background-color: {BG_CARD};
+                color: {TEXT};
                 border: 1px solid {BORDER};
-                border-radius: 8px;
-                top: -1px;
-                background: {BG_DARK};
+                border-radius: 6px;
+                padding: 6px 8px;
             }}
-            QTabBar {{ qproperty-drawBase: 0; }}
+            QStatusBar {{ color: {FAINT}; font-size: 11px; }}
+            QStatusBar::item {{ border: none; }}
+            QTabWidget::pane {{
+                border: none;
+                border-top: 1px solid {BORDER_SOFT};
+                top: -1px;
+                background: transparent;
+            }}
+            QTabBar {{ qproperty-drawBase: 0; background: transparent; }}
             QTabBar::tab {{
-                background: {BG_CARD};
+                background: transparent;
                 color: {SUBTEXT};
-                padding: 9px 26px;
+                padding: 11px 22px;
                 margin-right: 4px;
-                border: 1px solid {BORDER};
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                font-family: "Courier New";
-                font-size: 11px;
+                border: none;
+                border-bottom: 2px solid transparent;
+                font-size: 12px;
                 font-weight: bold;
-                letter-spacing: 2px;
+                letter-spacing: 1.5px;
             }}
             QTabBar::tab:selected {{
                 color: {TEXT};
-                background: {BG_DARK};
-                border-color: {ACCENT};
-                border-bottom-color: {BG_DARK};
+                border-bottom: 2px solid {ACCENT};
             }}
-            QTabBar::tab:!selected {{ margin-top: 2px; }}
             QTabBar::tab:hover:!selected {{ color: {TEXT}; }}
         """)
 
@@ -530,8 +597,8 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(20, 16, 20, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(26, 20, 26, 16)
+        root.setSpacing(14)
 
         # ── Header (persistent across all tabs) ──────────────────────────
         root.addLayout(self._build_header())
@@ -548,40 +615,61 @@ class MainWindow(QMainWindow):
 
     def _build_header(self) -> QHBoxLayout:
         header_row = QHBoxLayout()
+        header_row.setContentsMargins(2, 2, 2, 6)
+        header_row.setSpacing(12)
+
+        # Slim brand accent bar to the left of the title
+        accent_bar = QFrame()
+        accent_bar.setFixedSize(4, 26)
+        accent_bar.setStyleSheet(f"background-color: {ACCENT}; border-radius: 2px;")
+        header_row.addWidget(accent_bar)
+
         title = QLabel("ROCKET LEAGUE TRACKER")
-        title.setFont(QFont("Courier New", 18, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {ACCENT}; letter-spacing: 3px;")
+        title.setFont(QFont("Segoe UI", 17, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {TEXT}; letter-spacing: 2px;")
         header_row.addWidget(title)
         header_row.addStretch()
 
+        # Status grouped into a soft pill
+        status_pill = QFrame()
+        status_pill.setObjectName("statusPill")
+        status_pill.setStyleSheet(
+            f"QFrame#statusPill {{ background-color: {BG_CARD}; "
+            f"border: 1px solid {BORDER_SOFT}; border-radius: 15px; }}"
+        )
+        pill_layout = QHBoxLayout(status_pill)
+        pill_layout.setContentsMargins(14, 6, 16, 6)
+        pill_layout.setSpacing(8)
         self._status_dot = QLabel("●")
-        self._status_dot.setStyleSheet(f"color: {SUBTEXT}; font-size: 18px;")
+        self._status_dot.setStyleSheet(f"color: {SUBTEXT}; font-size: 13px;")
         self._status_label = QLabel("Waiting for game...")
         self._status_label.setStyleSheet(f"color: {SUBTEXT};")
-        header_row.addWidget(self._status_dot)
-        header_row.addWidget(self._status_label)
+        pill_layout.addWidget(self._status_dot)
+        pill_layout.addWidget(self._status_label)
+        header_row.addWidget(status_pill)
 
         self._settings_btn = QPushButton()
         self._settings_btn.setIcon(QIcon(str(Path(__file__).parent / "assets" / "settings.png")))
         self._settings_btn.setIconSize(QSize(18, 18))
-        self._settings_btn.setFixedSize(32, 32)
+        self._settings_btn.setFixedSize(34, 34)
         self._settings_btn.setToolTip("Settings")
+        self._settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._settings_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {BG_CARD};
-                border: 1px solid {BORDER};
-                border-radius: 6px;
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 10px;
             }}
             QPushButton:hover {{
-                border-color: {TEXT};
-                background-color: #1a2030;
+                border-color: {SUBTEXT};
+                background-color: {BG_HOVER};
             }}
-            QPushButton:pressed {{ background-color: #0a1820; }}
+            QPushButton:pressed {{ background-color: {BG_TABLE}; }}
         """)
         self._settings_btn.clicked.connect(
             lambda: self.signals.settings_prompt.emit()
         )
-        header_row.addSpacing(8)
+        header_row.addSpacing(4)
         header_row.addWidget(self._settings_btn)
         return header_row
 
@@ -594,12 +682,12 @@ class MainWindow(QMainWindow):
 
         # ── Win / Loss row ───────────────────────────────────────────────
         record_row = QHBoxLayout()
-        record_row.setSpacing(12)
+        record_row.setSpacing(14)
 
-        self._wins_card   = self._stat_card("WINS",   "0", WIN_CLR)
-        self._losses_card = self._stat_card("LOSSES", "0", LOSS_CLR)
-        self._ratio_card  = self._stat_card("RATIO",  "—", ACCENT2)
-        self._streak_card = self._stat_card("STREAK", "0", SUBTEXT)
+        self._wins_card   = self._stat_card("WINS",     "0", WIN_CLR,  "this session")
+        self._losses_card = self._stat_card("LOSSES",   "0", LOSS_CLR, "this session")
+        self._ratio_card  = self._stat_card("WIN RATE", "—", ACCENT2,  "this session")
+        self._streak_card = self._stat_card("STREAK",   "0", SUBTEXT,  "current run")
 
         record_row.addWidget(self._wins_card)
         record_row.addWidget(self._losses_card)
@@ -607,34 +695,35 @@ class MainWindow(QMainWindow):
         record_row.addWidget(self._streak_card)
         record_row.addStretch()
 
-        self._new_session_btn = QPushButton("＋  NEW SESSION")
-        self._new_session_btn.setFixedHeight(40)
+        self._new_session_btn = QPushButton("＋   New Session")
+        self._new_session_btn.setFixedHeight(42)
+        self._new_session_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._new_session_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {BG_CARD};
                 color: {ACCENT2};
-                border: 1px solid {ACCENT2};
-                border-radius: 6px;
-                padding: 0 16px;
-                font-family: "Courier New";
-                font-size: 11px;
-                font-weight: bold;
-                letter-spacing: 1px;
+                border: 1px solid {BORDER};
+                border-radius: 10px;
+                padding: 0 20px;
+                font-size: 12px;
+                font-weight: 600;
+                letter-spacing: 0.5px;
             }}
             QPushButton:hover {{
-                background-color: #0d2030;
-                border-color: {TEXT};
+                background-color: {BG_HOVER};
+                border-color: {ACCENT2};
                 color: {TEXT};
             }}
-            QPushButton:pressed {{ background-color: #0a1820; }}
+            QPushButton:pressed {{ background-color: {BG_TABLE}; }}
         """)
         self._new_session_btn.clicked.connect(
             lambda: self.signals.new_session_requested.emit()
         )
         record_row.addWidget(self._new_session_btn)
 
-        self._pause_tracking_cb = QCheckBox("PAUSE TRACKING")
-        self._pause_tracking_cb.setFixedHeight(40)
+        self._pause_tracking_cb = QCheckBox("Pause Tracking")
+        self._pause_tracking_cb.setFixedHeight(42)
+        self._pause_tracking_cb.setCursor(Qt.CursorShape.PointingHandCursor)
         self._pause_tracking_cb.setToolTip(
             "When enabled, finished matches are not saved to history.\n"
             "Players still appear in the Current Match panel."
@@ -644,29 +733,28 @@ class MainWindow(QMainWindow):
                 color: {SUBTEXT};
                 background-color: {BG_CARD};
                 border: 1px solid {BORDER};
-                border-radius: 6px;
-                padding: 0 14px;
-                font-family: "Courier New";
-                font-size: 11px;
-                font-weight: bold;
-                letter-spacing: 1px;
-                spacing: 8px;
+                border-radius: 10px;
+                padding: 0 16px;
+                font-size: 12px;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+                spacing: 9px;
             }}
             QCheckBox:hover {{
-                border-color: {ACCENT};
+                border-color: {SUBTEXT};
                 color: {TEXT};
             }}
             QCheckBox:checked {{
                 color: {ACCENT};
                 border-color: {ACCENT};
-                background-color: #2a1014;
+                background-color: {ACCENT}1e;
             }}
             QCheckBox::indicator {{
-                width: 14px;
-                height: 14px;
+                width: 15px;
+                height: 15px;
                 border: 1px solid {BORDER};
-                border-radius: 3px;
-                background-color: {BG_DARK};
+                border-radius: 4px;
+                background-color: {BG_TABLE};
             }}
             QCheckBox::indicator:hover {{
                 border-color: {ACCENT};
@@ -693,7 +781,10 @@ class MainWindow(QMainWindow):
         self._players_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._players_layout = QVBoxLayout(self._players_container)
         self._players_layout.setContentsMargins(0, 0, 0, 0)
-        self._players_layout.setSpacing(12)
+        self._players_layout.setSpacing(14)
+        self._players_layout.addWidget(
+            self._make_placeholder("No active match", "Players appear here once a match begins")
+        )
         self._players_layout.addStretch()
         players_card.content_layout.addWidget(self._players_container, stretch=1)
         players_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -705,7 +796,10 @@ class MainWindow(QMainWindow):
         self._encounters_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._encounters_layout = QVBoxLayout(self._encounters_container)
         self._encounters_layout.setContentsMargins(0, 0, 0, 0)
-        self._encounters_layout.setSpacing(4)
+        self._encounters_layout.setSpacing(6)
+        self._encounters_layout.addWidget(
+            self._make_placeholder("No encounters yet", "Your history with these players shows here")
+        )
         self._encounters_layout.addStretch()
         encounters_card.content_layout.addWidget(self._encounters_container, stretch=1)
         encounters_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -733,49 +827,62 @@ class MainWindow(QMainWindow):
         # ── Header / totals ─────────────────────────────────────────────
         header = QHBoxLayout()
         self._sessions_title_lbl = QLabel("ALL SESSIONS")
-        self._sessions_title_lbl.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
-        self._sessions_title_lbl.setStyleSheet(f"color: {ACCENT2};")
+        self._sessions_title_lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.DemiBold))
+        self._sessions_title_lbl.setStyleSheet(f"color: {TEXT}; letter-spacing: 0.5px;")
         self._sessions_totals_lbl = QLabel()
-        self._sessions_totals_lbl.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
-        self._sessions_totals_lbl.setStyleSheet(f"color: {TEXT};")
+        self._sessions_totals_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.DemiBold))
+        self._sessions_totals_lbl.setStyleSheet(f"color: {SUBTEXT};")
         header.addWidget(self._sessions_title_lbl)
         header.addStretch()
         header.addWidget(self._sessions_totals_lbl)
         outer.addLayout(header)
 
-        # ── Sessions table ──────────────────────────────────────────────
+        # ── Sessions table (wrapped in a card-like panel) ────────────────
         cols = ["Session", "Dates", "Matches", "Wins", "Losses",
                 "Win %", "Best W Streak", "Worst L Streak"]
         self._sessions_table = self._make_table(cols)
-        self._sessions_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self._sessions_table.itemSelectionChanged.connect(self._update_session_delete_enabled)
-        outer.addWidget(self._sessions_table, stretch=1)
 
         self._sessions_empty_lbl = QLabel("No sessions recorded yet.")
-        self._sessions_empty_lbl.setStyleSheet(f"color: {SUBTEXT}; padding: 20px;")
+        self._sessions_empty_lbl.setStyleSheet(f"color: {SUBTEXT}; padding: 24px;")
         self._sessions_empty_lbl.setVisible(False)
-        outer.addWidget(self._sessions_empty_lbl)
+
+        table_panel = QFrame()
+        table_panel.setObjectName("panel")
+        table_panel.setStyleSheet(
+            f"QFrame#panel {{ background-color: {BG_CARD}; "
+            f"border: 1px solid {BORDER_SOFT}; border-radius: 14px; }}"
+        )
+        soft_shadow(table_panel, blur=32, y_offset=8, alpha=70)
+        panel_layout = QVBoxLayout(table_panel)
+        panel_layout.setContentsMargins(16, 12, 16, 16)
+        panel_layout.setSpacing(0)
+        panel_layout.addWidget(self._sessions_table)
+        panel_layout.addWidget(self._sessions_empty_lbl)
+        outer.addWidget(table_panel, stretch=1)
 
         # ── Delete control ──────────────────────────────────────────────
         btn_row = QHBoxLayout()
         self._session_delete_btn = QPushButton("Delete Session")
         self._session_delete_btn.setFixedWidth(150)
+        self._session_delete_btn.setFixedHeight(38)
         self._session_delete_btn.setEnabled(False)
         self._session_delete_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {BG_CARD};
                 color: {LOSS_CLR};
                 border: 1px solid {BORDER};
-                border-radius: 6px;
+                border-radius: 10px;
                 padding: 6px 18px;
+                font-weight: 600;
             }}
             QPushButton:hover {{
-                background-color: #2a1014;
+                background-color: {LOSS_CLR}1e;
                 border-color: {LOSS_CLR};
             }}
             QPushButton:disabled {{
-                color: {SUBTEXT};
-                border-color: {BORDER};
+                color: {FAINT};
+                border-color: {BORDER_SOFT};
             }}
         """)
         self._session_delete_btn.clicked.connect(self._handle_session_delete)
@@ -796,7 +903,7 @@ class MainWindow(QMainWindow):
         card = Card("Analytics")
 
         heading = QLabel("Analytics coming soon")
-        heading.setFont(QFont("Courier New", 15, QFont.Weight.Bold))
+        heading.setFont(QFont("Segoe UI", 17, QFont.Weight.DemiBold))
         heading.setStyleSheet(f"color: {TEXT}; background: transparent; border: none;")
         card.content_layout.addWidget(heading)
 
@@ -805,7 +912,9 @@ class MainWindow(QMainWindow):
             "Planned views:"
         )
         blurb.setWordWrap(True)
-        blurb.setStyleSheet(f"color: {SUBTEXT}; background: transparent; border: none;")
+        blurb.setStyleSheet(
+            f"color: {SUBTEXT}; background: transparent; border: none; padding-bottom: 6px;"
+        )
         card.content_layout.addWidget(blurb)
 
         planned = [
@@ -817,10 +926,10 @@ class MainWindow(QMainWindow):
             "Head-to-head comparison between any two matches",
         ]
         for item in planned:
-            row = QLabel(f"•  {item}")
+            row = QLabel(f"<span style='color:{ACCENT2}'>•</span>&nbsp;&nbsp;{item}")
             row.setWordWrap(True)
             row.setStyleSheet(
-                f"color: {TEXT}; background: transparent; border: none; padding: 2px 0 2px 6px;"
+                f"color: {TEXT}; background: transparent; border: none; padding: 5px 0 5px 4px;"
             )
             card.content_layout.addWidget(row)
 
@@ -828,29 +937,39 @@ class MainWindow(QMainWindow):
         outer.addWidget(card, stretch=1)
         return tab
 
-    def _stat_card(self, label: str, value: str, colour: str) -> QFrame:
+    def _stat_card(self, label: str, value: str, colour: str, caption: str = "") -> QFrame:
         frame = QFrame()
-        frame.setFixedSize(120, 80)
+        frame.setObjectName("statCard")
+        frame.setFixedSize(158, 104)
         frame.setStyleSheet(f"""
-            QFrame {{
+            QFrame#statCard {{
                 background-color: {BG_CARD};
-                border: 1px solid {BORDER};
-                border-radius: 8px;
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
             }}
         """)
+        soft_shadow(frame, blur=22, y_offset=5, alpha=55)
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(2)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(0)
 
         lbl = QLabel(label)
-        lbl.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color: {SUBTEXT};")
+        lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        lbl.setStyleSheet(f"color: {SUBTEXT}; letter-spacing: 1.3px;")
         layout.addWidget(lbl)
 
+        layout.addStretch()
+
         val = QLabel(value)
-        val.setFont(QFont("Courier New", 26, QFont.Weight.Bold))
+        val.setFont(QFont("Segoe UI", 30, QFont.Weight.DemiBold))
         val.setStyleSheet(f"color: {colour};")
         layout.addWidget(val)
+
+        if caption:
+            cap = QLabel(caption)
+            cap.setFont(QFont("Segoe UI", 8))
+            cap.setStyleSheet(f"color: {FAINT}; letter-spacing: 0.3px;")
+            layout.addWidget(cap)
 
         # store reference to the value label so we can update it
         frame._value_label = val
@@ -861,14 +980,40 @@ class MainWindow(QMainWindow):
         t.setHorizontalHeaderLabels(headers)
         t.horizontalHeader().setStretchLastSection(True)
         t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        t.horizontalHeader().setHighlightSections(False)
         t.verticalHeader().setVisible(False)
+        t.verticalHeader().setDefaultSectionSize(40)
+        t.setShowGrid(False)
         t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        t.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         t.setAlternatingRowColors(True)
         t.setStyleSheet(t.styleSheet() + f"""
-            QTableWidget {{ alternate-background-color: #1a2030; }}
+            QTableWidget {{ alternate-background-color: {BG_ALT}; }}
         """)
         return t
+
+    def _make_placeholder(self, text: str, sub: str = "") -> QWidget:
+        """A centred, muted idle/empty state for the live-match panels."""
+        w = QWidget()
+        w.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 24, 0, 24)
+        lay.setSpacing(6)
+        lay.addStretch()
+        lbl = QLabel(text)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setFont(QFont("Segoe UI", 12))
+        lbl.setStyleSheet(f"color: {SUBTEXT}; background: transparent;")
+        lay.addWidget(lbl)
+        if sub:
+            s = QLabel(sub)
+            s.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            s.setFont(QFont("Segoe UI", 9))
+            s.setStyleSheet(f"color: {FAINT}; background: transparent;")
+            lay.addWidget(s)
+        lay.addStretch()
+        return w
 
     # ------------------------------------------------------------------
     # Slot handlers (called on main thread via signals)
@@ -887,6 +1032,11 @@ class MainWindow(QMainWindow):
         for p in players:
             teams.setdefault(p.get("team", -1), []).append(p)
 
+        if not teams:
+            self._players_layout.addWidget(
+                self._make_placeholder("No active match", "Players appear here once a match begins")
+            )
+
         for team_num in sorted(teams.keys()):
             info        = team_info.get(team_num, {})
             team_colour = info.get("color") or (ACCENT2 if team_num == 0 else ACCENT)
@@ -903,30 +1053,41 @@ class MainWindow(QMainWindow):
         section.setStyleSheet("QFrame { background: transparent; border: none; }")
         sec_layout = QVBoxLayout(section)
         sec_layout.setContentsMargins(0, 0, 0, 0)
-        sec_layout.setSpacing(0)
+        sec_layout.setSpacing(6)
 
-        header = QLabel(team_label.upper())
-        header.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
-        header.setStyleSheet(
-            f"color: {team_colour}; "
-            f"background: transparent; "
-            f"border: none; "
-            f"border-bottom: 2px solid {team_colour}; "
-            f"padding: 4px 8px; "
-            f"letter-spacing: 2px;"
+        # Team header: colour dot + name + player count
+        header_row = QFrame()
+        header_row.setStyleSheet("background: transparent; border: none;")
+        hl = QHBoxLayout(header_row)
+        hl.setContentsMargins(2, 0, 2, 4)
+        hl.setSpacing(8)
+
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {team_colour}; background: transparent; border: none; font-size: 11px;")
+        name = QLabel(team_label.upper())
+        name.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        name.setStyleSheet(
+            f"color: {team_colour}; background: transparent; border: none; letter-spacing: 1.5px;"
         )
-        sec_layout.addWidget(header)
+        count = QLabel(f"{len(players)}")
+        count.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        count.setStyleSheet(f"color: {FAINT}; background: transparent; border: none;")
+        hl.addWidget(dot)
+        hl.addWidget(name)
+        hl.addStretch()
+        hl.addWidget(count)
+        sec_layout.addWidget(header_row)
 
         for idx, p in enumerate(players):
             row = QFrame()
             row.setObjectName("playerRow")
             row.setStyleSheet(
                 f"QFrame#playerRow {{ "
-                f"background-color: {BG_TABLE if idx % 2 == 0 else '#1a2030'}; "
-                f"border: none; }}"
+                f"background-color: {BG_TABLE if idx % 2 == 0 else BG_ALT}; "
+                f"border: none; border-radius: 8px; }}"
             )
             row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(12, 6, 12, 6)
+            row_layout.setContentsMargins(14, 9, 14, 9)
             row_layout.setSpacing(8)
 
             name_lbl = QLabel(p.get("name", "Unknown"))
@@ -963,9 +1124,9 @@ class MainWindow(QMainWindow):
                 w.deleteLater()
 
         if not combined:
-            empty = QLabel("Waiting for match...")
-            empty.setStyleSheet(f"color: {SUBTEXT}; background: transparent; padding: 8px;")
-            self._encounters_layout.addWidget(empty)
+            self._encounters_layout.addWidget(
+                self._make_placeholder("No encounters yet", "Your history with these players shows here")
+            )
         else:
             for idx, enc in enumerate(combined):
                 self._encounters_layout.addWidget(self._build_encounter_row(enc, idx))
@@ -982,11 +1143,11 @@ class MainWindow(QMainWindow):
         row.setObjectName("encounterRow")
         row.setStyleSheet(
             f"QFrame#encounterRow {{ "
-            f"background-color: {BG_TABLE if idx % 2 == 0 else '#1a2030'}; "
-            f"border: none; border-radius: 4px; }}"
+            f"background-color: {BG_TABLE if idx % 2 == 0 else BG_ALT}; "
+            f"border: none; border-radius: 8px; }}"
         )
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setContentsMargins(14, 9, 14, 9)
         layout.setSpacing(10)
 
         role_dot = QLabel("●")
@@ -1045,8 +1206,8 @@ class MainWindow(QMainWindow):
 
             when_lbl = QLabel(when_text)
             when_lbl.setStyleSheet(
-                f"color: {ACCENT2}; background: transparent; border: none; "
-                f"font-family: 'Courier New'; font-size: 11px;"
+                f"color: {ACCENT2}; background-color: {ACCENT2}1c; border: none; "
+                f"border-radius: 8px; padding: 3px 9px; font-size: 10px;"
             )
             layout.addWidget(when_lbl)
 
@@ -1220,11 +1381,10 @@ class MainWindow(QMainWindow):
 
     def _on_status_changed(self, message: str):
         connected = "connected" in message.lower()
+        colour = WIN_CLR if connected else SUBTEXT
         self._status_dot.setStyleSheet(
-            f"color: {WIN_CLR if connected else SUBTEXT}; font-size: 18px;"
+            f"color: {colour}; background: transparent; font-size: 13px;"
         )
         self._status_label.setText(message)
-        self._status_label.setStyleSheet(
-            f"color: {WIN_CLR if connected else SUBTEXT};"
-        )
+        self._status_label.setStyleSheet(f"color: {colour}; background: transparent;")
         self.statusBar().showMessage(message)
