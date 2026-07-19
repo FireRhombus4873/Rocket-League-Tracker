@@ -1,426 +1,38 @@
+"""
+MainWindow — the app's top-level window.
+
+A persistent header (status pill + gear button) sits above a three-tab
+QTabWidget (Tracker / Sessions / Analytics), plus system-tray integration for
+minimise-to-tray / autostart use. All UI updates arrive on the main thread
+through `self.signals` (see ui.signals.UISignals): background threads emit,
+the slots here receive.
+"""
 from pathlib import Path
 
-import webbrowser
 import datetime
-from urllib.parse import quote
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QFrame, QSizePolicy, QDialog, QPushButton, QCheckBox,
-    QSystemTrayIcon, QMenu, QMessageBox, QTabWidget, QGraphicsDropShadowEffect
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
+    QFrame, QSizePolicy, QPushButton, QCheckBox,
+    QSystemTrayIcon, QMenu, QMessageBox, QTabWidget,
 )
-from PyQt6.QtCore import pyqtSignal, QObject, Qt, QSize
+from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QColor, QIcon, QAction
 
-# --------------------------------------------------------------------------
-# Signal bridge: lets background threads safely update the Qt UI
-# --------------------------------------------------------------------------
-class UISignals(QObject):
-    players_updated       = pyqtSignal(list, dict)        # list of player dicts, team_info dict
-    encounters_updated    = pyqtSignal(list, list, list)  # opponents encounters, teammates encounters
-    record_updated        = pyqtSignal(int, int)          # wins, losses
-    history_updated       = pyqtSignal(list, int)         # list of match history dicts, current session num
-    status_changed        = pyqtSignal(str)               # status bar text
-    session_prompt        = pyqtSignal(int)               # last session number, triggers dialog
-    settings_prompt       = pyqtSignal()                  # user doesn't have localUsername set
-    new_session_requested    = pyqtSignal()               # user clicked "New Session"
-    sessions_updated         = pyqtSignal(list)            # list of session summary dicts
-    session_delete_requested = pyqtSignal(int)             # user confirmed deleting a session
-    game_started             = pyqtSignal()                # Rocket League process detected
+from .theme import (
+    APP_STYLESHEET,
+    BG_CARD, BG_TABLE, BG_ALT, BG_HOVER,
+    TEXT, SUBTEXT, FAINT,
+    ACCENT, ACCENT2, WIN_CLR, LOSS_CLR,
+    BORDER, BORDER_SOFT,
+)
+from .widgets import soft_shadow, platform_icon, Card
+from .signals import UISignals
+from .dialogs.match_stats_dialog import MatchStatsDialog
 
-# --------------------------------------------------------------------------
-# Design tokens — a calm, modern dark theme.
-# Depth comes from low-contrast elevation (surfaces + soft shadows) rather
-# than hard 1px borders, and colour is used sparingly as an accent.
-# --------------------------------------------------------------------------
-# Surfaces
-BG_DARK   = "#0e1015"   # app background (soft near-black)
-BG_CARD   = "#171b23"   # elevated card surface
-BG_TABLE  = "#12151c"   # recessed / inset surface (tables, wells)
-BG_ALT    = "#1b202a"   # subtle alternating fill / row stripe
-BG_HOVER  = "#232a35"   # hover state
-
-# Text
-TEXT      = "#e8ebf1"
-SUBTEXT   = "#8a92a2"
-FAINT     = "#5b6373"   # tertiary / captions
-
-# Accents (used sparingly)
-ACCENT    = "#f2555f"   # Rocket League red — brand cue
-ACCENT2   = "#4f9dea"   # calm blue
-WIN_CLR   = "#41c46b"
-LOSS_CLR  = "#ef5f6b"
-
-# Lines
-BORDER      = "#242a35"  # subtle hairline
-BORDER_SOFT = "#1c222c"  # barely-there separators
-SELECT_BG   = "#1e3a5f"  # row selection
-
-# Type — clean system sans, no monospace
-FONT_UI   = '"Segoe UI Variable Text", "Segoe UI", "Inter", sans-serif'
-FONT_HEAD = '"Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", sans-serif'
-
-
-def soft_shadow(widget, *, blur=28, y_offset=6, alpha=90):
-    """Attach a subtle drop shadow so surfaces lift off the background.
-    Qt stylesheets can't do box-shadow, so we use a graphics effect."""
-    effect = QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(blur)
-    effect.setXOffset(0)
-    effect.setYOffset(y_offset)
-    effect.setColor(QColor(0, 0, 0, alpha))
-    widget.setGraphicsEffect(effect)
-    return effect
-
-
-PLATFORM_ICONS = {
-    "steam":   "🖥",
-    "epic":    "🎮",
-    "psn":     "🎮",
-    "xbox":    "🎮",
-    "Unknown": "❓",
-}
-
-def platform_icon(platform: str) -> str:
-    return PLATFORM_ICONS.get(platform.lower(), "🎮")
-
-# --------------------------------------------------------------------------
-# Reusable card widget
-# --------------------------------------------------------------------------
-class Card(QFrame):
-    def __init__(self, title: str, parent=None):
-        super().__init__(parent)
-        self.setObjectName("card")
-        self.setStyleSheet(f"""
-            QFrame#card {{
-                background-color: {BG_CARD};
-                border: 1px solid {BORDER_SOFT};
-                border-radius: 14px;
-            }}
-        """)
-        soft_shadow(self, blur=32, y_offset=8, alpha=70)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 18, 22, 20)
-        layout.setSpacing(14)
-
-        header = QLabel(title.upper())
-        header.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-        header.setStyleSheet(
-            f"color: {SUBTEXT}; background: transparent; border: none; "
-            f"letter-spacing: 1.5px;"
-        )
-        layout.addWidget(header)
-
-        self.content_layout = QVBoxLayout()
-        self.content_layout.setSpacing(8)
-        layout.addLayout(self.content_layout)
-
-# --------------------------------------------------------------------------
-# Match Stats Dialog
-# --------------------------------------------------------------------------
-
-# ------------------------------------
-# Mouse cursor change for name column
-# ------------------------------------
-class NameColumnCursor(QObject):
-    def __init__(self, table, name_col=0):
-        super().__init__(table)
-        self.table = table
-        self.name_col = name_col
-
-    def eventFilter(self, obj, event):
-        if event.type() == event.Type.MouseMove:
-            index = self.table.indexAt(event.pos())
-            if index.isValid() and index.column() == self.name_col:
-                self.table.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
-            else:
-                self.table.viewport().setCursor(Qt.CursorShape.ArrowCursor)
-        return False
-
-class MatchStatsDialog(QDialog):
-    def __init__(self, entry: dict, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Match Stats")
-        self.setMinimumSize(1022, 428)
-        self.setStyleSheet(f"""
-            QDialog, QWidget {{
-                background-color: {BG_DARK};
-                color: {TEXT};
-                font-family: {FONT_UI};
-                font-size: 13px;
-            }}
-            QTableWidget {{
-                background-color: {BG_TABLE};
-                border: 1px solid {BORDER_SOFT};
-                border-radius: 12px;
-                gridline-color: transparent;
-                color: {TEXT};
-            }}
-            QTableWidget::item {{ padding: 9px 12px; border: none; }}
-            QTableWidget::item:selected {{ background-color: {SELECT_BG}; }}
-            QHeaderView::section {{
-                background-color: transparent;
-                color: {FAINT};
-                border: none;
-                border-bottom: 1px solid {BORDER_SOFT};
-                padding: 10px 12px;
-                font-size: 10px;
-                font-weight: bold;
-                letter-spacing: 0.5px;
-            }}
-            QPushButton {{
-                background-color: {BG_CARD};
-                color: {TEXT};
-                border: 1px solid {BORDER};
-                border-radius: 8px;
-                padding: 8px 20px;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{ background-color: {BG_HOVER}; border-color: {SUBTEXT}; }}
-        """)
-
-        result  = entry.get("result", "?").upper()
-        date    = entry.get("date", "")[:10]
-        session = entry.get("sessionNum", "?")
-        result_colour = WIN_CLR if result == "WIN" else LOSS_CLR
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(26, 22, 26, 22)
-        layout.setSpacing(18)
-
-        # ── Header ──────────────────────────────────────────────────────
-        header = QHBoxLayout()
-        header.setSpacing(10)
-        title_lbl = QLabel(f"Session {session}")
-        title_lbl.setFont(QFont("Segoe UI", 15, QFont.Weight.DemiBold))
-        title_lbl.setStyleSheet(f"color: {TEXT};")
-        date_lbl = QLabel(date)
-        date_lbl.setFont(QFont("Segoe UI", 12))
-        date_lbl.setStyleSheet(f"color: {SUBTEXT};")
-        result_lbl = QLabel(result)
-        result_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        result_lbl.setStyleSheet(
-            f"color: {result_colour}; background-color: {result_colour}22; "
-            f"border-radius: 11px; padding: 5px 16px; letter-spacing: 1px;"
-        )
-        header.addWidget(title_lbl)
-        header.addWidget(date_lbl)
-        header.addStretch()
-        header.addWidget(result_lbl)
-        layout.addLayout(header)
-
-        # ── Players table ────────────────────────────────────────────────
-        cols = ["Name", "Platform", "Side", "Score", "Goals", "Shots",
-                "Assists", "Saves", "Touches", "Car Touches", "Demos"]
-        table = QTableWidget(0, len(cols))
-        table.setHorizontalHeaderLabels(cols)
-        table.horizontalHeader().setStretchLastSection(True)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        table.verticalHeader().setVisible(False)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setAlternatingRowColors(True)
-        table.verticalHeader().setDefaultSectionSize(38)
-        table.setShowGrid(False)
-        table.setStyleSheet(table.styleSheet() + f"QTableWidget {{ alternate-background-color: {BG_ALT}; }}")
-
-        def tracker_platform_slug(platform: str) -> str:
-            mapping = {
-                "epic": "epic",
-                "steam": "steam",
-                "psn": "psn",
-                "ps4": "psn",
-                "ps5": "psn",
-                "playstation": "psn",
-                "xbl": "xbl",
-                "xbox": "xbl",
-                "switch": "switch",
-            }
-            return mapping.get(platform.lower(), platform.lower())
-        
-        def tracker_url(platform: str, name: str) -> str:
-            slug = tracker_platform_slug(platform)
-            encoded_name = quote(name)
-            return f"https://rocketleague.tracker.network/rocket-league/profile/{slug}/{encoded_name}/overview"
-
-        def add_player(player: dict, side: str, side_colour: str):
-            row = table.rowCount()
-            table.insertRow(row)
-            plat = player.get("platform", "Unknown")
-            values = [
-                (player.get("name", "?"),              TEXT),
-                (f"{platform_icon(plat)}  {plat.capitalize()}", SUBTEXT),
-                (side,                                  side_colour),
-                (str(player.get("score",      0)),     TEXT),
-                (str(player.get("goals",      0)),     TEXT),
-                (str(player.get("shots",      0)),     TEXT),
-                (str(player.get("assists",    0)),     TEXT),
-                (str(player.get("saves",      0)),     TEXT),
-                (str(player.get("touches",    0)),     TEXT),
-                (str(player.get("carTouches", 0)),     TEXT),
-                (str(player.get("demos",      0)),     TEXT),
-            ]
-            for col, (text, colour) in enumerate(values):
-                item = QTableWidgetItem(text)
-                item.setForeground(QColor(colour))
-                if col == 0:
-                    font = item.font()
-                    font.setUnderline(True)
-                    item.setFont(font)
-                    item.setForeground(QColor(side_colour))
-                    item.setData(Qt.ItemDataRole.UserRole, player)
-                    item.setToolTip("Click to open Rocket League Tracker profile")
-                table.setItem(row, col, item)
-
-        for p in entry.get("teammates", []):
-            add_player(p, "Teammate", ACCENT2)
-        for p in entry.get("opponents", []):
-            add_player(p, "Opponent", ACCENT)
-
-        def on_cell_clicked(row, column):
-            if column != 0:
-                return
-            item = table.item(row, 0)
-            player = item.data(Qt.ItemDataRole.UserRole)
-            if not player:
-                return
-            platform = player.get("platform", "")
-            name = player.get("name", "")
-            if not platform or not name:
-                return
-            if platform.lower() == "steam":
-                name = player.get("id").split("|")[1]  # use Steam ID for tracker URL
-            url = tracker_url(platform, name)
-            webbrowser.open(url)
-
-        table.cellClicked.connect(on_cell_clicked)
-        cursor_filter = NameColumnCursor(table)
-        table.viewport().installEventFilter(cursor_filter)
-        table.setMouseTracking(True)
-        table.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        layout.addWidget(table)
-
-        # ── Close button ─────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.setFixedWidth(100)
-        close_btn.clicked.connect(self.accept)
-        btn_row.addWidget(close_btn)
-        layout.addLayout(btn_row)
-
-
-# --------------------------------------------------------------------------
-# Settings Dialog
-# --------------------------------------------------------------------------
-class SettingsDialog(QDialog):
-    def __init__(self, username: str = "", teammates=None, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Settings")
-        self.setMinimumWidth(480)
-        self.setStyleSheet(f"""
-            QDialog, QWidget {{
-                background-color: {BG_DARK};
-                color: {TEXT};
-                font-family: {FONT_UI};
-                font-size: 13px;
-            }}
-            QLineEdit {{
-                background-color: {BG_TABLE};
-                color: {TEXT};
-                border: 1px solid {BORDER};
-                border-radius: 8px;
-                padding: 9px 12px;
-                selection-background-color: {SELECT_BG};
-            }}
-            QLineEdit:focus {{ border-color: {ACCENT2}; }}
-            QPushButton {{
-                background-color: {BG_CARD};
-                color: {TEXT};
-                border: 1px solid {BORDER};
-                border-radius: 8px;
-                padding: 8px 20px;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{ background-color: {BG_HOVER}; border-color: {SUBTEXT}; }}
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(26, 22, 26, 22)
-        layout.setSpacing(18)
-
-        # ── Header ──────────────────────────────────────────────────────
-        title_lbl = QLabel("Settings")
-        title_lbl.setFont(QFont("Segoe UI", 16, QFont.Weight.DemiBold))
-        title_lbl.setStyleSheet(f"color: {TEXT};")
-        layout.addWidget(title_lbl)
-
-        # ── Form ────────────────────────────────────────────────────────
-        form = QFormLayout()
-        form.setContentsMargins(0, 4, 0, 4)
-        form.setSpacing(10)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        def field_label(text: str) -> QLabel:
-            lbl = QLabel(text)
-            lbl.setStyleSheet(f"color: {SUBTEXT};")
-            return lbl
-
-        self._username_edit = QLineEdit(username)
-        self._username_edit.setPlaceholderText("e.g. FireRhombus4873")
-        form.addRow(field_label("In-game name"), self._username_edit)
-
-        teammates_text = ", ".join(teammates or [])
-        self._teammates_edit = QLineEdit(teammates_text)
-        self._teammates_edit.setPlaceholderText("Optional, comma-separated")
-        form.addRow(field_label("Common teammates"), self._teammates_edit)
-
-        layout.addLayout(form)
-
-        # ── Help text ───────────────────────────────────────────────────
-        help_lbl = QLabel(
-            "Your in-game name is used to detect which team is yours. "
-            "Common teammates are filtered out in the encounters card."
-        )
-        help_lbl.setWordWrap(True)
-        help_lbl.setStyleSheet(f"color: {SUBTEXT}; font-size: 11px;")
-        layout.addWidget(help_lbl)
-
-        # ── Inline error ────────────────────────────────────────────────
-        self._error_lbl = QLabel("")
-        self._error_lbl.setStyleSheet(f"color: {LOSS_CLR}; font-size: 11px;")
-        self._error_lbl.setVisible(False)
-        layout.addWidget(self._error_lbl)
-
-        # ── Buttons ─────────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.setFixedWidth(100)
-        cancel_btn.clicked.connect(self.reject)
-        save_btn = QPushButton("Save")
-        save_btn.setFixedWidth(100)
-        save_btn.setDefault(True)
-        save_btn.clicked.connect(self._on_save)
-        btn_row.addWidget(cancel_btn)
-        btn_row.addWidget(save_btn)
-        layout.addLayout(btn_row)
-
-    def _on_save(self):
-        if not self._username_edit.text().strip():
-            self._error_lbl.setText("In-game name is required.")
-            self._error_lbl.setVisible(True)
-            self._username_edit.setStyleSheet(f"border: 1px solid {LOSS_CLR};")
-            self._username_edit.setFocus()
-            return
-        self.accept()
-
-    def username(self) -> str:
-        return self._username_edit.text().strip()
-
-    def teammates(self) -> list:
-        return [t.strip() for t in self._teammates_edit.text().split(",") if t.strip()]
+# Assets are bundled at the project (dev) / _MEIPASS (frozen) root. This module
+# lives one level down in the `ui` package, so climb two parents to reach them.
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
 
 # --------------------------------------------------------------------------
@@ -431,7 +43,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Rocket League Tracker")
         self.setMinimumSize(1000, 750)
-        self.setWindowIcon(QIcon(str(Path(__file__).parent / "assets" / "RocketLeagueTracker.ico")))
+        self.setWindowIcon(QIcon(str(ASSETS_DIR / "RocketLeagueTracker.ico")))
         self._apply_styles()
         self._build_ui()
 
@@ -454,7 +66,7 @@ class MainWindow(QMainWindow):
     # System tray
     # ------------------------------------------------------------------
     def _setup_tray(self):
-        icon = QIcon(str(Path(__file__).parent / "assets" / "RocketLeagueTracker.ico"))
+        icon = QIcon(str(ASSETS_DIR / "RocketLeagueTracker.ico"))
         self._tray = QSystemTrayIcon(icon, parent=self)
         self._tray.setToolTip("Rocket League Tracker")
 
@@ -500,95 +112,7 @@ class MainWindow(QMainWindow):
     # Style
     # ------------------------------------------------------------------
     def _apply_styles(self):
-        self.setStyleSheet(f"""
-            QMainWindow, QWidget {{
-                background-color: {BG_DARK};
-                color: {TEXT};
-                font-family: {FONT_UI};
-                font-size: 13px;
-            }}
-            QTableWidget {{
-                background-color: transparent;
-                border: none;
-                gridline-color: transparent;
-                color: {TEXT};
-                outline: none;
-            }}
-            QTableWidget::item {{ padding: 9px 12px; border: none; }}
-            QTableWidget::item:selected {{
-                background-color: {SELECT_BG};
-            }}
-            QHeaderView {{ background: transparent; }}
-            QHeaderView::section {{
-                background-color: transparent;
-                color: {FAINT};
-                border: none;
-                border-bottom: 1px solid {BORDER_SOFT};
-                padding: 8px 12px;
-                font-size: 10px;
-                font-weight: bold;
-                letter-spacing: 0.5px;
-            }}
-            QScrollBar:vertical {{
-                background: transparent;
-                width: 10px;
-                margin: 2px 0 2px 0;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {BORDER};
-                border-radius: 4px;
-                min-height: 32px;
-            }}
-            QScrollBar::handle:vertical:hover {{ background: {FAINT}; }}
-            QScrollBar:horizontal {{
-                background: transparent;
-                height: 10px;
-                margin: 0 2px 0 2px;
-            }}
-            QScrollBar::handle:horizontal {{
-                background: {BORDER};
-                border-radius: 4px;
-                min-width: 32px;
-            }}
-            QScrollBar::handle:horizontal:hover {{ background: {FAINT}; }}
-            QScrollBar::add-line, QScrollBar::sub-line {{
-                width: 0; height: 0; background: transparent; border: none;
-            }}
-            QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
-            QLabel {{ background: transparent; }}
-            QToolTip {{
-                background-color: {BG_CARD};
-                color: {TEXT};
-                border: 1px solid {BORDER};
-                border-radius: 6px;
-                padding: 6px 8px;
-            }}
-            QStatusBar {{ color: {FAINT}; font-size: 11px; }}
-            QStatusBar::item {{ border: none; }}
-            QTabWidget::pane {{
-                border: none;
-                border-top: 1px solid {BORDER_SOFT};
-                top: -1px;
-                background: transparent;
-            }}
-            QTabBar {{ qproperty-drawBase: 0; background: transparent; }}
-            QTabBar::tab {{
-                background: transparent;
-                color: {SUBTEXT};
-                padding: 11px 22px;
-                margin-right: 4px;
-                border: none;
-                border-bottom: 2px solid transparent;
-                font-size: 12px;
-                font-weight: bold;
-                letter-spacing: 1.5px;
-            }}
-            QTabBar::tab:selected {{
-                color: {TEXT};
-                border-bottom: 2px solid {ACCENT};
-            }}
-            QTabBar::tab:hover:!selected {{ color: {TEXT}; }}
-        """)
+        self.setStyleSheet(APP_STYLESHEET)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -649,7 +173,7 @@ class MainWindow(QMainWindow):
         header_row.addWidget(status_pill)
 
         self._settings_btn = QPushButton()
-        self._settings_btn.setIcon(QIcon(str(Path(__file__).parent / "assets" / "settings.png")))
+        self._settings_btn.setIcon(QIcon(str(ASSETS_DIR / "settings.png")))
         self._settings_btn.setIconSize(QSize(18, 18))
         self._settings_btn.setFixedSize(34, 34)
         self._settings_btn.setToolTip("Settings")

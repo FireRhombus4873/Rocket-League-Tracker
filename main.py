@@ -14,7 +14,7 @@ import sys
 import threading
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from mainWindow      import MainWindow, SettingsDialog
+from ui             import MainWindow, SettingsDialog
 from settingsManager import SettingsManager
 from eventHandler    import EventHandler
 from socketHandler   import SocketHandler
