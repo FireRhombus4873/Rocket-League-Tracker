@@ -10,7 +10,7 @@ The app runs in the background, optionally autostarting with Windows, and ships 
 
 ## Architecture
 
-The runtime pipeline is built around five components, each in its own file, plus two support modules (`config.py`, `settingsManager.py`) that own paths and persisted preferences. They communicate through callbacks and PyQt signals — the boundaries between them matter, so changes should respect the existing flow.
+The runtime pipeline is built around five components — four single-file modules (`processHandler.py`, `socketHandler.py`, `eventHandler.py`, `sessionStore.py`) plus the GUI, which lives in the `ui/` package — with two support modules (`config.py`, `settingsManager.py`) that own paths and persisted preferences. They communicate through callbacks and PyQt signals — the boundaries between them matter, so changes should respect the existing flow.
 
 ```
 processHandler ──watches──> RocketLeague.exe
@@ -24,7 +24,7 @@ eventHandler / sessionStore (depending on event type)
        │
        │ PyQt signals (thread-safe)
        ▼
-mainWindow (PyQt6 GUI)
+ui.main_window (PyQt6 GUI)
 ```
 
 ### `main.py` — wiring
@@ -84,17 +84,28 @@ If a legacy `match_history.json` exists and the DB has no matches, `_maybe_migra
 - `wait_for_game_to_close()` polls the same way and returns as soon as `psutil` reports the process gone
 - ⚠️ Earlier revisions had a `CLOSE_CONFIRMATIONS = 3` debounce wrapped in try/except for `NoSuchProcess` / `AccessDenied` (psutil is flaky during system boot, and one missed check kills the socket listener). That safety net is **not currently in the code** — restoring it is worth doing before declaring autostart "fixed"
 
-### `mainWindow.py` — GUI
+### `ui/` package — GUI
 
-- A persistent header (status indicator + gear settings button) sits above a `QTabWidget` (`self._tabs`) with three top-level tabs. Each tab is built by its own `_build_*_tab()` method returning a `QWidget`; the header is built by `_build_header()`. The status bar spans all tabs.
+The GUI was split out of a single ~1,390-line `mainWindow.py` into a small package. Behaviour is unchanged — only the layout:
+
+- `ui/main_window.py` — `MainWindow`: the persistent header, the `QTabWidget`, and every signal slot.
+- `ui/theme.py` — dark-theme design tokens (`BG_DARK`, `ACCENT`, …) **and** the app-wide `APP_STYLESHEET` string.
+- `ui/widgets.py` — reusable pieces shared by the window and dialogs: `Card`, `soft_shadow`, `platform_icon`, `NameColumnCursor`.
+- `ui/signals.py` — `UISignals`.
+- `ui/dialogs/` — `match_stats_dialog.py` (`MatchStatsDialog`) and `settings_dialog.py` (`SettingsDialog`).
+- `ui/__init__.py` re-exports `MainWindow` and `SettingsDialog`, so `main.py` imports both via `from ui import MainWindow, SettingsDialog`. Only `main.py` imports from the GUI layer.
+
+⚠️ Assets are bundled at the project / `_MEIPASS` root, but `ui/main_window.py` sits one level down, so it resolves them via `ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"`. Any new module under `ui/` that loads an asset must account for its own depth — don't copy the old `Path(__file__).parent / "assets"`, which now points one level too shallow.
+
+**`MainWindow` (`ui/main_window.py`)** — a persistent header (status indicator + gear settings button) sits above a `QTabWidget` (`self._tabs`) with three top-level tabs. Each tab is built by its own `_build_*_tab()` method returning a `QWidget`; the header is built by `_build_header()`. The status bar spans all tabs.
   - **Tracker** — win/loss/ratio/streak cards, NEW SESSION / PAUSE TRACKING controls, current-match player list, Past Encounters card (per-player W/L vs you, opponents and teammates merged with a red/blue role dot — common teammates from settings are filtered out), and the match history table.
   - **Sessions** — one row per session (dates, matches, W/L, win %, best-win/worst-loss streaks) with a totals header. Selecting a row enables **Delete Session**, which confirms then emits `session_delete_requested`; `main.py` performs the delete and re-emits `sessions_updated` to re-render. This replaced the old modal `SessionSummaryDialog` and the standalone SESSIONS button.
   - **Analytics** — placeholder card listing planned views (win rate over time, stat averages, overtime/duration, time-of-day performance, opponent/teammate breakdowns, match comparison). No live data yet.
-- Dark theme defined as constants (BG_DARK, ACCENT, etc.) at the top; `QTabWidget`/`QTabBar` styling lives in `_apply_styles`.
-- All UI updates flow through `UISignals` (a `QObject` with `pyqtSignal`s) — background threads emit, main thread slots receive. **Never touch widgets from a background thread directly.** The Sessions tab is fed by `sessions_updated(list)` (emitted from `main.py`'s `_refresh_sessions` after startup, record, new-session, and delete) and drives deletes back via `session_delete_requested(int)`.
-- Two modal dialogs remain:
-  - `MatchStatsDialog` — opened by clicking a history row; shows per-player stats for that match. Each player's **name cell is a clickable link** (underlined, coloured by role, pointing-hand cursor via the `NameColumnCursor` event filter) that opens their Rocket League Tracker profile in the default browser (`https://rocketleague.tracker.network/rocket-league/profile/<slug>/<id-or-name>/overview`). `tracker_platform_slug` maps our platform strings to tracker slugs (`ps4`/`ps5`/`playstation` → `psn`, `xbox`/`xbl` → `xbl`, etc.). For Steam the URL uses the numeric account ID pulled from `PrimaryId` (`id.split("|")[1]`); other platforms use the display name (URL-encoded).
-  - `SettingsDialog` — opened by the gear button or auto-prompted on first run when no username is saved
+- The dark theme lives in `ui/theme.py` as constants (`BG_DARK`, `ACCENT`, etc.) plus the `APP_STYLESHEET` string; `MainWindow._apply_styles` just applies that sheet, and the `QTabWidget`/`QTabBar` styling is part of it.
+- All UI updates flow through `UISignals` (`ui/signals.py`, a `QObject` with `pyqtSignal`s) — background threads emit, main thread slots receive. **Never touch widgets from a background thread directly.** The Sessions tab is fed by `sessions_updated(list)` (emitted from `main.py`'s `_refresh_sessions` after startup, record, new-session, and delete) and drives deletes back via `session_delete_requested(int)`.
+- Two modal dialogs live in `ui/dialogs/`:
+  - `MatchStatsDialog` (`ui/dialogs/match_stats_dialog.py`) — opened by clicking a history row; shows per-player stats for that match. Each player's **name cell is a clickable link** (underlined, coloured by role, pointing-hand cursor via the `NameColumnCursor` event filter) that opens their Rocket League Tracker profile in the default browser (`https://rocketleague.tracker.network/rocket-league/profile/<slug>/<id-or-name>/overview`). `tracker_platform_slug` maps our platform strings to tracker slugs (`ps4`/`ps5`/`playstation` → `psn`, `xbox`/`xbl` → `xbl`, etc.). For Steam the URL uses the numeric account ID pulled from `PrimaryId` (`id.split("|")[1]`); other platforms use the display name (URL-encoded).
+  - `SettingsDialog` (`ui/dialogs/settings_dialog.py`) — opened by the gear button or auto-prompted on first run when no username is saved
 - System tray icon allows minimise-to-tray behaviour for autostart use
 
 ## Critical Conventions
@@ -102,7 +113,7 @@ If a legacy `match_history.json` exists and the DB has no matches, `_maybe_migra
 ### Threading
 
 - Qt requires all UI work on the main thread. Background threads (`process_watcher`, socket listener) communicate via `window.signals.<name>.emit(...)`.
-- When adding a new background → UI interaction, **always add a new `pyqtSignal` to `UISignals`** rather than calling widget methods directly.
+- When adding a new background → UI interaction, **always add a new `pyqtSignal` to `UISignals`** (in `ui/signals.py`) rather than calling widget methods directly.
 
 ### Stats API quirks
 

@@ -38,7 +38,12 @@ pip install PyQt6 psutil pyinstaller
 ```
 Rocket League Tracker/
 ├── main.py             # Entry point — wires up all components
-├── mainWindow.py       # PyQt6 GUI (main window + match/session/settings dialogs)
+├── ui/                 # PyQt6 GUI package
+│   ├── main_window.py  #   MainWindow — header, tabs, and signal slots
+│   ├── theme.py        #   design tokens + app-wide stylesheet
+│   ├── widgets.py      #   shared widgets (Card, soft_shadow, …)
+│   ├── signals.py      #   UISignals (background → UI signal bus)
+│   └── dialogs/        #   MatchStatsDialog, SettingsDialog
 ├── sessionStore.py     # SQLite-backed match history and session management
 ├── eventHandler.py     # Processes Stats API events
 ├── socketHandler.py    # TCP connection to Stats API (localhost:49123)
