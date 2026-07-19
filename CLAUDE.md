@@ -157,6 +157,27 @@ pip install pyinstaller
 
 The build uses `RocketLeagueTracker.spec` (a PyInstaller spec file) which bundles everything into a single `.exe` with the icon from `assets/`.
 
+### Testing
+
+Tests live in `tests/` and run with `pytest` (config in `pytest.ini`; dev deps in `requirements-dev.txt`).
+
+```bat
+.venv\Scripts\activate
+pip install -r requirements-dev.txt
+pytest                 REM whole suite
+pytest -m "not ui"     REM skip the Qt tier (headless / no display)
+```
+
+`pytest.ini` sets `pythonpath = .` so tests import the top-level modules directly. The suite is organised in three tiers, matched to where the risk actually is (most bugs live in the data layer, even though most *changes* are UI):
+
+- **Tier 1 — `tests/test_session_store.py`** (the bulk). Drives `SessionStore` against a throwaway SQLite DB and asserts on counters + the DB itself. One test per scenario in *Editing `sessionStore.py`* (win/loss/leaver-inferred/freeplay-skipped, the refresh-return contract, duplicate-name non-collision, double-record guard, discard/pause, duration+overtime, encounters incl. `crossEncounters`, session streaks, delete cascade, continue-session retally, legacy-JSON migration). The `store` / `db_paths` fixtures (in `tests/conftest.py`) monkeypatch `sessionStore.HISTORY_DB_FILE` / `HISTORY_FILE` into `tmp_path` — patch them on the **`sessionStore` module**, not `config`, because they're bound at import via `from config import …`. Message shapes are built with the `player()` / `update_state()` helpers in `tests/factories.py`.
+- **Tier 2 — `test_event_handler.py`, `test_socket_handler.py`, `test_parsing.py`**. Pure logic, no Qt: `EventHandler.dispatch`, the `SocketHandler._handle_message` double-decode/routing, `_parse_platform`, and `get_winner` / `tracker_platform_slug`. The socket *reconnect/buffer loop* is not unit-tested (needs a live TCP peer) — only the message parsing that feeds it.
+- **Tier 3 — `test_ui.py`** (marked `@pytest.mark.ui`, needs `pytest-qt` + a display). Deliberately shallow: emit a `UISignals` signal, assert the target widget's text updated. **Do not assert pixels, colours, or stylesheet strings** — those are meant to change when the UI is restyled, and testing them just creates churn. These tests survive a redesign and only fail if the signal→slot→widget wiring breaks.
+
+Two pure helpers were lifted to module scope specifically so Tier 2 can reach them: `get_winner` (from a closure in `main.py` → `eventHandler.py`, imported back by `main.py`) and `tracker_platform_slug` (from a method in `ui/dialogs/match_stats_dialog.py` → module level). Both are behaviour-preserving.
+
+A bug the suite surfaced and that's since been fixed: `PLATFORM_MAP`'s keys used to be PascalCase (`Steam`/`Epic`/`Xboxone`) while `_parse_platform` lowercases the prefix before the lookup, so an `Xboxone` prefix resolved to `"Xboxone"` instead of `"Xbox"`. The keys are now all lower-case, so the lookup hits them directly. Keep any new `PLATFORM_MAP` keys lower-case for the same reason.
+
 ## Things That Aren't What They Look Like
 
 - **The Stats API is not the SOS plugin.** Earlier versions of this code used SOS — different event names (`game:ball_hit` etc.), a different port (49122), and a different message structure. The current codebase no longer references SOS, but if you find any such comments in future, they're stale: Stats API is the source of truth.

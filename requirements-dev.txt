@@ -1,0 +1,5 @@
+# Test-only dependencies. Install with:
+#   .venv\Scripts\activate
+#   pip install -r requirements-dev.txt
+pytest>=8.0
+pytest-qt>=4.4      # Tier 3 only — provides the `qtbot` fixture + QApplication

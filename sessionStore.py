@@ -6,11 +6,11 @@ import json
 import os
 
 PLATFORM_MAP = {
-    "Steam":     "Steam",
-    "Epic":      "Epic",
+    "steam":     "Steam",
+    "epic":      "Epic",
     "ps4":       "PlayStation",
     "psn":       "PlayStation",
-    "Xboxone":   "Xbox",
+    "xboxone":   "Xbox",
     "xbl":       "Xbox",
     "switch":    "Switch",
 }

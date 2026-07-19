@@ -1,3 +1,17 @@
+def get_winner(event: dict) -> int:
+    """Parse the winning team number out of a MatchEnded event dict.
+
+    `event` is the small result dict produced by `EventHandler.on_match_ended`
+    — `{"MatchEnded": <value>}`, where <value> is the API's WinnerTeamNum (which
+    may arrive as a string, or as "?" when absent). Returns the team number as an
+    int, or -1 when the value is missing or unparseable (e.g. a forfeit/leaver)."""
+    winner = event.get("MatchEnded")
+    try:
+        return int(winner)
+    except (ValueError, TypeError):
+        return -1
+
+
 class EventHandler():
     def __init__(self, on_event_callback=None):
         self.on_event_callback = on_event_callback

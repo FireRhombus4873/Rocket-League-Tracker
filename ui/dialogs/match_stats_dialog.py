@@ -21,6 +21,28 @@ from ..theme import (
 from ..widgets import platform_icon, NameColumnCursor
 
 
+# Our internal platform strings -> rocketleague.tracker.network profile slugs.
+# Module-scoped (rather than nested in the dialog) so it can be unit-tested.
+_TRACKER_PLATFORM_SLUGS = {
+    "epic":        "epic",
+    "steam":       "steam",
+    "psn":         "psn",
+    "ps4":         "psn",
+    "ps5":         "psn",
+    "playstation": "psn",
+    "xbl":         "xbl",
+    "xbox":        "xbl",
+    "xboxone":     "xbl",
+    "switch":      "switch",
+}
+
+
+def tracker_platform_slug(platform: str) -> str:
+    """Return the tracker.network profile slug for one of our platform strings,
+    falling back to the lower-cased input for anything unmapped."""
+    return _TRACKER_PLATFORM_SLUGS.get(platform.lower(), platform.lower())
+
+
 class MatchStatsDialog(QDialog):
     def __init__(self, entry: dict, parent=None):
         super().__init__(parent)
@@ -107,20 +129,6 @@ class MatchStatsDialog(QDialog):
         table.verticalHeader().setDefaultSectionSize(38)
         table.setShowGrid(False)
         table.setStyleSheet(table.styleSheet() + f"QTableWidget {{ alternate-background-color: {BG_ALT}; }}")
-
-        def tracker_platform_slug(platform: str) -> str:
-            mapping = {
-                "epic": "epic",
-                "steam": "steam",
-                "psn": "psn",
-                "ps4": "psn",
-                "ps5": "psn",
-                "playstation": "psn",
-                "xbl": "xbl",
-                "xbox": "xbl",
-                "switch": "switch",
-            }
-            return mapping.get(platform.lower(), platform.lower())
 
         def tracker_url(platform: str, name: str) -> str:
             slug = tracker_platform_slug(platform)

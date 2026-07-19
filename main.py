@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from ui             import MainWindow, SettingsDialog
 from settingsManager import SettingsManager
-from eventHandler    import EventHandler
+from eventHandler    import EventHandler, get_winner
 from socketHandler   import SocketHandler
 from processHandler  import ProcessHandler
 from sessionStore    import SessionStore
@@ -61,14 +61,6 @@ def main():
             _refresh_record(window, session)
             _refresh_history(window, session)
             _refresh_sessions(window, session)
-
-        def get_winner(event: dict) -> int:
-            winner = event.get("MatchEnded")
-            try:
-                winner_int = int(winner)
-            except (ValueError, TypeError):
-                winner_int = -1
-            return winner_int
 
         if "MatchInitialised" in event:
             window.signals.status_changed.emit("Match initialising...")
