@@ -851,25 +851,34 @@ class MainWindow(QMainWindow):
         holder.setStyleSheet("background: transparent;")
         lay = QHBoxLayout(holder)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         btn = QPushButton("✕")
-        btn.setFixedSize(24, 24)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setToolTip("Delete this match from history")
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # The button fills the cell widget rather than taking a fixed size.
+        # `QTableWidget::item { padding: 9px 12px }` in APP_STYLESHEET shrinks a
+        # cell widget to the padded content rect (here 20x22, not the 44x40
+        # cell), so a fixed size larger than that gets clipped — which showed up
+        # as a hover fill with one straight edge instead of a rounded square.
         btn.setStyleSheet(f"""
             QPushButton {{
-                background: transparent;
+                background-color: transparent;
                 color: {FAINT};
                 border: none;
-                border-radius: 6px;
+                border-radius: 7px;
                 font-size: 12px;
             }}
             QPushButton:hover {{
                 background-color: {LOSS_CLR_BG};
                 color: {LOSS_CLR};
+                border-radius: 7px;
             }}
-            QPushButton:pressed {{ background-color: {LOSS_CLR_BG}; }}
+            QPushButton:pressed {{
+                background-color: {LOSS_CLR_BG};
+                color: {LOSS_CLR};
+                border-radius: 7px;
+            }}
         """)
         btn.clicked.connect(lambda _checked=False, e=entry: self._handle_match_delete(e))
         lay.addWidget(btn)
