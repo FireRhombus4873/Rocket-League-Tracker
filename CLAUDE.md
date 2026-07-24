@@ -35,6 +35,7 @@ ui.main_window (PyQt6 GUI)
 - Spawns `process_watcher` on a background thread that loops forever: wait for RL → emit `settings_prompt` if no username is saved → start socket → wait for RL to close → stop socket → repeat
 - `LOCAL_USERNAME` / `COMMON_TEAMMATES` are module globals. They're synced from `SettingsManager` **immediately after construction in `main()`** (not just via `prompt_settings`) — without this, `try_set_players_from_update` would be called with `local_username=None` and crash on `.lower()`, killing the socket loop. `prompt_settings` then re-syncs after the dialog so first-run / edits also take effect without a restart.
 - Owns **startup visibility** via `_should_show_on_start(sys.argv)`, called just before `app.exec()`. `MainWindow` never shows itself — constructing it only puts the tray icon on screen — so whether the window is visible at launch is decided here and nowhere else. Frozen builds (`sys.frozen`, set by the PyInstaller bootloader) start tray-only so autostart doesn't steal focus at boot; running from source starts visible so UI changes are testable without digging through the tray. `--show` / `--tray` force either behaviour. See *Development* below.
+- Owns **close behaviour** the same way, via `_should_close_to_tray(sys.argv)` → `MainWindow(close_to_tray=...)`. The build hides to tray on close (it must stay resident to notice the next RL launch); a source run quits outright, so closing the window ends the process instead of orphaning it in the tray. Note the two helpers read the flags differently: `--tray` forces build behaviour in both, but **`--show` only affects launch visibility** — a build passed `--show` still closes to tray.
 
 ### `config.py` / `settingsManager.py` — paths + user settings
 
@@ -109,7 +110,7 @@ The GUI was split out of a single ~1,390-line `mainWindow.py` into a small packa
 - Two modal dialogs live in `ui/dialogs/`:
   - `MatchStatsDialog` (`ui/dialogs/match_stats_dialog.py`) — opened by clicking a history row; shows per-player stats for that match. Each player's **name cell is a clickable link** (underlined, coloured by role, pointing-hand cursor via the `NameColumnCursor` event filter) that opens their Rocket League Tracker profile in the default browser (`https://rocketleague.tracker.network/rocket-league/profile/<slug>/<id-or-name>/overview`). `tracker_platform_slug` maps our platform strings to tracker slugs (`ps4`/`ps5`/`playstation` → `psn`, `xbox`/`xbl` → `xbl`, etc.). For Steam the URL uses the numeric account ID pulled from `PrimaryId` (`id.split("|")[1]`); other platforms use the display name (URL-encoded).
   - `SettingsDialog` (`ui/dialogs/settings_dialog.py`) — opened by the gear button or auto-prompted on first run when no username is saved
-- System tray icon allows minimise-to-tray behaviour for autostart use. `_setup_tray` shows the *tray icon* on construction but never the window, and `closeEvent` hides to tray rather than quitting — so the window becomes visible only via `_show_from_tray` (tray click, or the `game_started` signal when RL is detected) or an explicit `show()` from `main.py` at launch.
+- System tray icon allows minimise-to-tray behaviour for autostart use. `_setup_tray` shows the *tray icon* on construction but never the window — so the window becomes visible only via `_show_from_tray` (tray click, or the `game_started` signal when RL is detected) or an explicit `show()` from `main.py` at launch. `closeEvent` branches on the `close_to_tray` constructor flag: hide + notify (the shipped default), or take the tray icon down and `QApplication.quit()`. Hiding the icon before quitting matters — Windows leaves a ghost tray icon if the process dies while it's still registered.
 
 ## Critical Conventions
 
@@ -150,7 +151,7 @@ pip install PyQt6 psutil
 python main.py
 ```
 
-Run from source the window **opens visible**; the built `.exe` starts minimised to the tray (see `_should_show_on_start` under *`main.py` — wiring*). To exercise the real autostart path from source, pass `--tray`; to force the window open in a build, pass `--show`:
+Run from source the window **opens visible** and **closing it quits the app**; the built `.exe` starts minimised to the tray and closes back to it (see `_should_show_on_start` / `_should_close_to_tray` under *`main.py` — wiring*). To exercise the real autostart path from source, pass `--tray` — it switches *both* behaviours; to force the window open in a build, pass `--show` (launch visibility only — it still closes to tray):
 
 ```bat
 python main.py --tray      REM behave like the shipped build

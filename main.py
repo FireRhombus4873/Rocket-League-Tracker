@@ -36,7 +36,7 @@ def main():
     LOCAL_USERNAME   = settings.settings.get("localUsername") or ""
     COMMON_TEAMMATES = list(settings.settings.get("commonTeammates") or [])
 
-    window          = MainWindow()
+    window          = MainWindow(close_to_tray=_should_close_to_tray(sys.argv))
     session         = SessionStore()
     event_handler   = EventHandler(on_event_callback=lambda evt: handle_event(evt))
     process_handler = ProcessHandler()
@@ -227,6 +227,23 @@ def _should_show_on_start(argv: list) -> bool:
     if "--tray" in argv:
         return False
     return not getattr(sys, "frozen", False)
+
+
+def _should_close_to_tray(argv: list) -> bool:
+    """
+    Decide what closing the window does: hide to the tray, or quit outright.
+
+    The shipped build hides — it has to stay resident to notice the next
+    Rocket League launch. From source that's a nuisance (the process
+    survives the window and has to be hunted down in the tray), so a dev run
+    quits properly.
+
+    `--tray` forces the shipped behaviour. `--show` deliberately does *not*
+    affect this — it only controls launch visibility.
+    """
+    if "--tray" in argv:
+        return True
+    return getattr(sys, "frozen", False)
 
 
 def _refresh_record(window: MainWindow, session: SessionStore):

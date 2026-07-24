@@ -11,7 +11,7 @@ from pathlib import Path
 
 import datetime
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
     QFrame, QSizePolicy, QPushButton, QCheckBox,
     QSystemTrayIcon, QMenu, QMessageBox, QTabWidget,
@@ -43,8 +43,13 @@ class MainWindow(QMainWindow):
     # button rather than a QTableWidgetItem.
     HISTORY_DELETE_COL = 6
 
-    def __init__(self):
+    def __init__(self, close_to_tray: bool = True):
         super().__init__()
+        # When False, closing the window quits the app outright instead of
+        # hiding to the tray. main.py owns this decision (see
+        # _should_close_to_tray) — dev runs quit, the shipped build stays
+        # resident so it can reappear when Rocket League starts.
+        self._close_to_tray = close_to_tray
         self.setWindowTitle("Rocket League Tracker")
         self.setMinimumSize(1000, 750)
         self.setWindowIcon(QIcon(str(ASSETS_DIR / "RocketLeagueTracker.ico")))
@@ -103,6 +108,14 @@ class MainWindow(QMainWindow):
         self._show_from_tray()
 
     def closeEvent(self, event):
+        if not self._close_to_tray:
+            # Take the tray icon down first — Windows leaves a ghost icon
+            # behind if the process dies while it's still registered.
+            self._tray.hide()
+            event.accept()
+            QApplication.quit()
+            return
+
         event.ignore()
         self.hide()
         self._tray.showMessage(
