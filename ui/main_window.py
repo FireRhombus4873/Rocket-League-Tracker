@@ -334,6 +334,15 @@ class MainWindow(QMainWindow):
         # Match history
         history_card = Card("Match History")
         self._history_table = self._make_table(["Session", "Date", "Result", "Score", "Opponents", "Teammates"])
+        # The two name columns are the only ones that grow unbounded, so pin the
+        # four narrow ones to their content and let those share what's left.
+        # They elide with "…"; the per-cell tooltip carries the full roster.
+        hist_hdr = self._history_table.horizontalHeader()
+        hist_hdr.setStretchLastSection(False)
+        for col in (0, 1, 2, 3):
+            hist_hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        for col in (4, 5):
+            hist_hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
         history_card.content_layout.addWidget(self._history_table)
         history_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         middle.addWidget(history_card, stretch=4)
@@ -768,10 +777,18 @@ class MainWindow(QMainWindow):
                 parts = []
                 for p in players:
                     name  = p.get("name", "?")
-                    score = p.get("score", 0)
-                    goals = p.get("goals", 0)
-                    parts.append(f"{name} (Sc:{score} G:{goals})")
+                    parts.append(name)
                 return ",  ".join(parts) if parts else "—"
+
+            def fmt_detail(players):
+                """One player per line, with the score/goal detail the visible
+                cell text no longer carries. Plain text — names can contain
+                characters Qt would otherwise parse as rich text."""
+                lines = [
+                    f"{p.get('name', '?')}  —  Sc {p.get('score', 0)}, G {p.get('goals', 0)}"
+                    for p in players
+                ]
+                return "\n".join(lines) if lines else "—"
 
             opp_str  = fmt_players(entry.get("opponents", []))
             team_str = fmt_players(entry.get("teammates", []))
@@ -792,6 +809,9 @@ class MainWindow(QMainWindow):
             score_item.setForeground(QColor(TEXT))
             opp_item.setForeground(QColor(TEXT))
             team_item.setForeground(QColor(SUBTEXT))
+
+            opp_item.setToolTip(fmt_detail(entry.get("opponents", [])))
+            team_item.setToolTip(fmt_detail(entry.get("teammates", [])))
 
             t.setItem(row, 0, session_item)
             t.setItem(row, 1, date_item)
