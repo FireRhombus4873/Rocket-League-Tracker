@@ -193,8 +193,30 @@ def main():
     window.signals.new_session_requested.connect(on_new_session_requested)
     window.signals.session_delete_requested.connect(on_session_delete_requested)
 
+    if _should_show_on_start(sys.argv):
+        window.show()
+
     threading.Thread(target=process_watcher, daemon=True).start()
     sys.exit(app.exec())
+
+
+def _should_show_on_start(argv: list) -> bool:
+    """
+    Decide whether the main window is visible at launch.
+
+    The frozen build starts in the tray: it autostarts with Windows and
+    shouldn't steal focus at boot — the window pops up on its own when
+    Rocket League is detected (`game_started` -> `_show_from_tray`).
+    Running from source is almost always a dev/test run, so the window is
+    shown immediately rather than making you dig through the tray.
+
+    `--tray` and `--show` force either behaviour in both cases.
+    """
+    if "--show" in argv:
+        return True
+    if "--tray" in argv:
+        return False
+    return not getattr(sys, "frozen", False)
 
 
 def _refresh_record(window: MainWindow, session: SessionStore):
