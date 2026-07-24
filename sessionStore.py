@@ -309,7 +309,10 @@ class SessionStore():
 
         # Mirror the new row into the bounded recent-matches cache so the
         # history table picks it up without re-querying. Trim oldest if needed.
+        # `id` is carried through so the UI can target this exact match for
+        # deletion — see delete_match().
         self.match_history.append({
+            "id":         match_id,
             "date":       played_at,
             "result":     result_str,
             "sessionNum": self.session_num,
@@ -339,6 +342,20 @@ class SessionStore():
         active one). FK ON DELETE CASCADE handles `matches` and `match_players`."""
         with self._db_lock:
             self.cursor.execute("DELETE FROM sessions WHERE id = ?", (session_num,))
+            self.conn.commit()
+        self.match_history = self._load_history()
+        self._retally_active_session()
+
+    def delete_match(self, match_id: int):
+        """Remove a single match from the database and re-tally the active
+        session's wins/losses. FK ON DELETE CASCADE handles `match_players`.
+
+        The owning `sessions` row is deliberately left in place even when it's
+        now empty: it keeps `_load_last_session_num` monotonic so a later
+        session can't reuse a retired number. An empty session simply drops out
+        of `get_session_summaries`, which builds from `matches`."""
+        with self._db_lock:
+            self.cursor.execute("DELETE FROM matches WHERE id = ?", (match_id,))
             self.conn.commit()
         self.match_history = self._load_history()
         self._retally_active_session()
@@ -531,6 +548,7 @@ class SessionStore():
              touches, car_touches, demos,
              platform) in rows:
             entry = entries.setdefault(mid, {
+                "id":         mid,
                 "date":       played_at,
                 "result":     result,
                 "sessionNum": sid,

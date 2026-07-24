@@ -24,7 +24,7 @@ from .theme import (
     BG_CARD, BG_TABLE, BG_ALT, BG_HOVER,
     TEXT, SUBTEXT, FAINT,
     ACCENT, ACCENT2, WIN_CLR, LOSS_CLR,
-    BORDER, BORDER_SOFT,
+    LOSS_CLR_BG, BORDER, BORDER_SOFT,
 )
 from .widgets import soft_shadow, platform_icon, Card
 from .signals import UISignals
@@ -39,6 +39,10 @@ ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 # Main Window
 # --------------------------------------------------------------------------
 class MainWindow(QMainWindow):
+    # Trailing column of the match-history table; holds the per-row delete
+    # button rather than a QTableWidgetItem.
+    HISTORY_DELETE_COL = 6
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Rocket League Tracker")
@@ -271,7 +275,7 @@ class MainWindow(QMainWindow):
             QCheckBox:checked {{
                 color: {ACCENT};
                 border-color: {ACCENT};
-                background-color: {ACCENT}1e;
+                background-color: {LOSS_CLR_BG};
             }}
             QCheckBox::indicator {{
                 width: 15px;
@@ -333,16 +337,21 @@ class MainWindow(QMainWindow):
 
         # Match history
         history_card = Card("Match History")
-        self._history_table = self._make_table(["Session", "Date", "Result", "Score", "Opponents", "Teammates"])
+        self._history_table = self._make_table(
+            ["Session", "Date", "Result", "Score", "Opponents", "Teammates", ""]
+        )
         # The two name columns are the only ones that grow unbounded, so pin the
         # four narrow ones to their content and let those share what's left.
         # They elide with "…"; the per-cell tooltip carries the full roster.
+        # The trailing delete column is fixed so it can't be squeezed away.
         hist_hdr = self._history_table.horizontalHeader()
         hist_hdr.setStretchLastSection(False)
         for col in (0, 1, 2, 3):
             hist_hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         for col in (4, 5):
             hist_hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+        hist_hdr.setSectionResizeMode(self.HISTORY_DELETE_COL, QHeaderView.ResizeMode.Fixed)
+        self._history_table.setColumnWidth(self.HISTORY_DELETE_COL, 44)
         history_card.content_layout.addWidget(self._history_table)
         history_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         middle.addWidget(history_card, stretch=4)
@@ -819,6 +828,71 @@ class MainWindow(QMainWindow):
             t.setItem(row, 3, score_item)
             t.setItem(row, 4, opp_item)
             t.setItem(row, 5, team_item)
+            t.setCellWidget(row, self.HISTORY_DELETE_COL,
+                            self._make_match_delete_cell(entry))
+
+    def _make_match_delete_cell(self, entry: dict) -> QWidget:
+        """A centred ✕ button for one history row. Lives in a cell *widget*, so
+        clicking it doesn't fire `itemClicked` and open the stats dialog."""
+        holder = QWidget()
+        holder.setStyleSheet("background: transparent;")
+        lay = QHBoxLayout(holder)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        btn = QPushButton("✕")
+        btn.setFixedSize(24, 24)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip("Delete this match from history")
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {FAINT};
+                border: none;
+                border-radius: 6px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {LOSS_CLR_BG};
+                color: {LOSS_CLR};
+            }}
+            QPushButton:pressed {{ background-color: {LOSS_CLR_BG}; }}
+        """)
+        btn.clicked.connect(lambda _checked=False, e=entry: self._handle_match_delete(e))
+        lay.addWidget(btn)
+        return holder
+
+    def _handle_match_delete(self, entry: dict):
+        """Confirm, then hand the delete off to main.py via
+        `match_delete_requested`; it re-emits record/history/sessions to
+        re-render everything the removal affects."""
+        match_id = entry.get("id")
+        if match_id is None:
+            return
+
+        result     = entry.get("result", "?").upper()
+        date_str   = (entry.get("date") or "")[:10]
+        opp_goals  = sum(p.get("goals", 0) for p in entry.get("opponents", []))
+        team_goals = sum(p.get("goals", 0) for p in entry.get("teammates", []))
+        opponents  = ", ".join(p.get("name", "?") for p in entry.get("opponents", [])) or "—"
+
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle("Delete Match")
+        confirm.setIcon(QMessageBox.Icon.Warning)
+        confirm.setText(
+            f"Delete this match?\n\n"
+            f"Session {entry.get('sessionNum', '?')}  ·  {date_str}\n"
+            f"{result}  {team_goals} – {opp_goals}  vs  {opponents}\n\n"
+            "It will be permanently removed from history and your win/loss "
+            "record. This cannot be undone."
+        )
+        delete_btn = confirm.addButton("Delete", QMessageBox.ButtonRole.DestructiveRole)
+        confirm.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        confirm.exec()
+        if confirm.clickedButton() != delete_btn:
+            return
+
+        self.signals.match_delete_requested.emit(match_id)
 
     def _update_streak(self, history: list, session_num: int):
         streak = 0

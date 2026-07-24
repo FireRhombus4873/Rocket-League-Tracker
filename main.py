@@ -187,11 +187,21 @@ def main():
         _refresh_history(window, session)
         _refresh_sessions(window, session)
 
+    def on_match_delete_requested(match_id: int):
+        # Same refresh set as a session delete: removing a match can change the
+        # active session's W/L (and therefore the ratio and streak cards) as
+        # well as the history table and the session summaries.
+        session.delete_match(match_id)
+        _refresh_record(window, session)
+        _refresh_history(window, session)
+        _refresh_sessions(window, session)
+
     # Wire the session prompt signal to our handler
     window.signals.session_prompt.connect(prompt_session)
     window.signals.settings_prompt.connect(prompt_settings)
     window.signals.new_session_requested.connect(on_new_session_requested)
     window.signals.session_delete_requested.connect(on_session_delete_requested)
+    window.signals.match_delete_requested.connect(on_match_delete_requested)
 
     if _should_show_on_start(sys.argv):
         window.show()

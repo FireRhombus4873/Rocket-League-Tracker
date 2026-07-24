@@ -16,7 +16,8 @@ from PyQt6.QtCore import Qt
 
 from ..theme import (
     BG_DARK, BG_CARD, BG_TABLE, BG_ALT, BG_HOVER, TEXT, SUBTEXT, FAINT,
-    ACCENT, ACCENT2, WIN_CLR, LOSS_CLR, BORDER, BORDER_SOFT, SELECT_BG, FONT_UI,
+    ACCENT, ACCENT2, WIN_CLR, LOSS_CLR, WIN_CLR_BG, LOSS_CLR_BG, BORDER, 
+    BORDER_SOFT, SELECT_BG, FONT_UI,
 )
 from ..widgets import platform_icon, NameColumnCursor
 
@@ -89,6 +90,7 @@ class MatchStatsDialog(QDialog):
         date    = entry.get("date", "")[:10]
         session = entry.get("sessionNum", "?")
         result_colour = WIN_CLR if result == "WIN" else LOSS_CLR
+        result_bg_colour = WIN_CLR_BG if result == "WIN" else LOSS_CLR_BG
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(26, 22, 26, 22)
@@ -106,7 +108,7 @@ class MatchStatsDialog(QDialog):
         result_lbl = QLabel(result)
         result_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         result_lbl.setStyleSheet(
-            f"color: {result_colour}; background-color: {result_colour}22; "
+            f"color: {result_colour}; background-color: {result_bg_colour}; "
             f"border-radius: 11px; padding: 5px 16px; letter-spacing: 1px;"
         )
         header.addWidget(title_lbl)

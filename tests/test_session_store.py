@@ -269,6 +269,67 @@ def test_delete_session_cascades(store):
     assert (store.wins, store.losses) == (0, 0)
 
 
+def test_delete_match_removes_one_match_and_retallies(store):
+    store.new_session()
+    _record_results(store, [0, 1, 0])  # W, L, W  (Me is team 0)
+    assert (store.wins, store.losses) == (2, 1)
+
+    # Drop the middle match (the loss) — identified by the id the UI carries.
+    loss_id = next(e["id"] for e in store.match_history if e["result"] == "loss")
+    store.delete_match(loss_id)
+
+    assert (store.wins, store.losses) == (2, 0)
+    assert store.cursor.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 2
+    assert [e["result"] for e in store.match_history] == ["win", "win"]
+
+    s = store.get_session_summaries()[0]
+    assert (s["wins"], s["losses"], s["matches"]) == (2, 0, 2)
+    assert s["bestWinStreak"] == 2  # the two wins are now adjacent
+
+
+def test_delete_match_cascades_to_match_players(store):
+    store.new_session()
+    _record_results(store, [0, 1])
+    match_id = store.match_history[-1]["id"]
+
+    store.delete_match(match_id)
+
+    assert store.cursor.execute(
+        "SELECT COUNT(*) FROM match_players WHERE match_id = ?", (match_id,)
+    ).fetchone()[0] == 0
+    # The other match's players are untouched.
+    assert store.cursor.execute("SELECT COUNT(*) FROM match_players").fetchone()[0] == 2
+
+
+def test_delete_match_drops_encounter_history(store):
+    store.new_session()
+    _face(store, "m1", winner=0)  # win vs Nemesis
+    _face(store, "m2", winner=1)  # loss vs Nemesis
+
+    store.delete_match(store.match_history[-1]["id"])  # remove the loss
+
+    store.try_set_players_from_update(update_state("m3", [
+        player("Me",      "Steam|1|0", team=0),
+        player("Nemesis", "Epic|9|0",  team=1),
+    ]), "Me")
+    nem = next(e for e in store.get_current_encounters()["opponents"]
+               if e["name"] == "Nemesis")
+    assert nem["encounters"] == 1
+    assert (nem["wins"], nem["losses"]) == (1, 0)
+
+
+def test_delete_match_keeps_the_session_row_so_numbering_stays_monotonic(store):
+    store.new_session()
+    _record_results(store, [0])
+    sid = store.session_num
+
+    store.delete_match(store.match_history[-1]["id"])
+
+    assert store.get_session_summaries() == []          # empty session isn't listed
+    assert store._load_last_session_num() == sid        # ...but the number is retired
+    assert (store.wins, store.losses) == (0, 0)
+
+
 def test_continue_session_retallies_from_db(store):
     store.new_session()
     _record_results(store, [0, 1])  # one win, one loss in session 1

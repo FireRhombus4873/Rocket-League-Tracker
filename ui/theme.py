@@ -20,10 +20,12 @@ SUBTEXT   = "#8a92a2"
 FAINT     = "#5b6373"   # tertiary / captions
 
 # Accents (used sparingly)
-ACCENT    = "#f2555f"   # Rocket League red — brand cue
-ACCENT2   = "#4f9dea"   # calm blue
-WIN_CLR   = "#41c46b"
-LOSS_CLR  = "#ef5f6b"
+ACCENT      = "#f2555f"   # Rocket League red — brand cue
+ACCENT2     = "#4f9dea"   # calm blue
+WIN_CLR     = "#41c46b"
+LOSS_CLR    = "#ef5f6b"
+WIN_CLR_BG  = "#0b472b"
+LOSS_CLR_BG = "#4c1f22"
 
 # Lines
 BORDER      = "#242a35"  # subtle hairline

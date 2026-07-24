@@ -62,3 +62,27 @@ def test_history_row_selection_enables_delete_after_session_select(window):
          "teammates": []},
     ], 1)
     assert window._history_table.rowCount() == 1
+
+
+def test_history_delete_button_targets_the_right_match(window, qtbot, monkeypatch):
+    """Each row's ✕ must carry that row's match id through to the signal —
+    the confirmation dialog itself is modal, so it's stubbed out here."""
+    from PyQt6.QtWidgets import QPushButton
+
+    def entry(mid, result):
+        return {"id": mid, "date": "2024-01-0%dT12:00:00" % mid, "result": result,
+                "sessionNum": 1, "opponents": [], "teammates": []}
+
+    window.signals.history_updated.emit([entry(1, "win"), entry(2, "loss")], 1)
+
+    # The click handler resolves self._handle_match_delete at call time, so an
+    # instance-level stub applies to the already-built buttons.
+    monkeypatch.setattr(
+        window, "_handle_match_delete",
+        lambda e: window.signals.match_delete_requested.emit(e["id"]),
+    )
+
+    cell = window._history_table.cellWidget(1, window.HISTORY_DELETE_COL)
+    with qtbot.waitSignal(window.signals.match_delete_requested) as blocker:
+        cell.findChild(QPushButton).click()
+    assert blocker.args == [2]  # second row, not the first
