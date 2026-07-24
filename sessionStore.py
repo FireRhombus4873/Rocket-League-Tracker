@@ -231,7 +231,17 @@ class SessionStore():
                 return 1
             else:
                 return -1
-            
+
+        def empty_match():
+            for p in self.current_players:
+                if p.get("score", 0) > 0 or p.get("goals", 0) > 0:
+                    return False
+            return True
+
+        if empty_match():
+            # Don't record empty matches (e.g. freeplay, training, or a match that was never started)
+            return
+
         # If winner_team is not provided (When leaving before the MatchEnded event is called), calculate it from the teams goals.
         if winner_team is None:
             winner_team = calculate_winner_team()

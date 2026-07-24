@@ -77,6 +77,20 @@ def test_freeplay_match_is_not_recorded(store):
     assert (store.wins, store.losses) == (0, 0)
     assert store.get_session_summaries() == []
 
+def test_match_with_no_points_is_not_recorded(store):
+    # Local username appears, so _local_team resolves — but nobody put a single
+    # point or goal on the board, which means the match never actually started
+    # (e.g. a player failed to join). Must not be recorded.
+    store.new_session()
+    store.try_set_players_from_update(update_state("m1", [
+        player("Me", "Steam|1|0", team=0, score=0),
+        player("Rival", "Epic|2|0", team=1, score=0),
+    ]), local_username="Me")
+    store.record_result(winner_team=0)
+
+    assert (store.wins, store.losses) == (0, 0)
+    assert store.get_session_summaries() == []
+
 
 # ---------------------------------------------------------------------------
 # The "should I refresh the UI?" contract of try_set_players_from_update
@@ -140,7 +154,8 @@ def test_duplicate_display_names_do_not_collide(store):
 
 def test_result_recorded_flag_guards_double_recording(store):
     store.new_session()
-    roster = [player("Me", "Steam|1|0", team=0), player("R", "Epic|2|0", team=1)]
+    roster = [player("Me", "Steam|1|0", team=0, goals=2),
+              player("R",  "Epic|2|0",  team=1, goals=1)]
 
     store.try_set_players_from_update(update_state("m1", roster), "Me")
     assert store.result_recorded() is False
@@ -237,10 +252,15 @@ def test_cross_encounter_counts_opposite_role(store):
 # ---------------------------------------------------------------------------
 
 def _record_results(store, winners):
+    """Record one finished match per entry in `winners` (the winning team number).
+
+    Goals are non-zero and consistent with the winner: record_result skips a
+    roster where nobody scored at all, treating it as a match that never started.
+    """
     for i, winner in enumerate(winners):
         store.try_set_players_from_update(update_state(f"m{i}", [
-            player("Me", "Steam|1|0", team=0),
-            player("R",  "Epic|2|0",  team=1),
+            player("Me", "Steam|1|0", team=0, goals=(3 if winner == 0 else 1)),
+            player("R",  "Epic|2|0",  team=1, goals=(1 if winner == 0 else 3)),
         ]), "Me")
         store.record_result(winner_team=winner)
 
