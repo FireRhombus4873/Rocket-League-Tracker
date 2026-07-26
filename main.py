@@ -38,12 +38,17 @@ def main():
 
     window          = MainWindow(close_to_tray=_should_close_to_tray(sys.argv))
     session         = SessionStore()
+    # Rows recorded before schema v3 have no matches.local_player_id; this
+    # attributes them to you by name so per-you analytics aren't limited to
+    # matches recorded since the upgrade. Must run before the first refresh.
+    session.set_local_username(LOCAL_USERNAME)
     event_handler   = EventHandler(on_event_callback=lambda evt: handle_event(evt))
     process_handler = ProcessHandler()
 
     _refresh_history(window, session)
     _refresh_record(window, session)
     _refresh_sessions(window, session)
+    _refresh_analytics(window, session)
 
     def handle_update_state(data: dict):
         fresh = session.try_set_players_from_update(data, local_username=LOCAL_USERNAME)
@@ -61,6 +66,7 @@ def main():
             _refresh_record(window, session)
             _refresh_history(window, session)
             _refresh_sessions(window, session)
+            _refresh_analytics(window, session)
 
         if "MatchInitialised" in event:
             window.signals.status_changed.emit("Match initialising...")
@@ -147,6 +153,9 @@ def main():
 
         LOCAL_USERNAME   = saved_username
         COMMON_TEAMMATES = saved_teammates
+        # A newly-set (or corrected) username can attribute more history to you.
+        session.set_local_username(LOCAL_USERNAME)
+        _refresh_analytics(window, session)
 
     def process_watcher():
         while True:
@@ -180,12 +189,14 @@ def main():
             _refresh_record(window, session)
             _refresh_history(window, session)
             _refresh_sessions(window, session)
+            _refresh_analytics(window, session)
 
     def on_session_delete_requested(num: int):
         session.delete_session(num)
         _refresh_record(window, session)
         _refresh_history(window, session)
         _refresh_sessions(window, session)
+        _refresh_analytics(window, session)
 
     def on_match_delete_requested(match_id: int):
         # Same refresh set as a session delete: removing a match can change the
@@ -195,6 +206,7 @@ def main():
         _refresh_record(window, session)
         _refresh_history(window, session)
         _refresh_sessions(window, session)
+        _refresh_analytics(window, session)
 
     # Wire the session prompt signal to our handler
     window.signals.session_prompt.connect(prompt_session)
@@ -254,6 +266,11 @@ def _refresh_history(window: MainWindow, session: SessionStore):
 
 def _refresh_sessions(window: MainWindow, session: SessionStore):
     window.signals.sessions_updated.emit(session.get_session_summaries())
+
+def _refresh_analytics(window: MainWindow, session: SessionStore):
+    # Goes wherever _refresh_sessions goes, and last: the whole Analytics tab
+    # renders from this one snapshot.
+    window.signals.analytics_updated.emit(session.get_analytics())
 
 
 if __name__ == "__main__":

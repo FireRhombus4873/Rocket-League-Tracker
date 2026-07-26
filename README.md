@@ -9,6 +9,7 @@ A desktop application that monitors Rocket League gameplay in real-time, trackin
 - **Opponent history** — persistent record of everyone you've played against with per-match details
 - **Session stats** — win/loss/ratio cards with streak tracking per session
 - **Session summary** — per-session aggregates (best win streak, worst loss streak, win %) with the ability to delete an entire session
+- **Analytics** — all-time win-rate trend with a rolling average, your per-match stat averages in wins vs losses (plus your best and worst match), the overtime and match-length breakdown, win rate by time of day and day of week, and toughest-opponent / most-played-teammate leaderboards
 - **Match details** — click any match in history to see full player statistics
 - **Pause tracking** — toggle to ignore the current match's result (still shows players live)
 - **Settings** — set your in-game name and a list of common teammates from inside the app
@@ -42,6 +43,7 @@ Rocket League Tracker/
 │   ├── main_window.py  #   MainWindow — header, tabs, and signal slots
 │   ├── theme.py        #   design tokens + app-wide stylesheet
 │   ├── widgets.py      #   shared widgets (Card, soft_shadow, …)
+│   ├── charts.py       #   QPainter chart widgets for the Analytics tab
 │   ├── signals.py      #   UISignals (background → UI signal bus)
 │   └── dialogs/        #   MatchStatsDialog, SettingsDialog
 ├── sessionStore.py     # SQLite-backed match history and session management
@@ -63,7 +65,7 @@ Match history is stored in a SQLite database at:
 %LOCALAPPDATA%\FireRhombus\RocketLeagueTracker\history.db
 ```
 
-Tables: `sessions`, `matches`, `players`, `match_players` — sessions own matches, matches reference players via `match_players` (role = opponent/teammate, with the full stat block per player per match). Players are identified by their `PrimaryId` (e.g. `Steam|123|0`) so duplicates of common display names like `.` are tracked correctly.
+Tables: `sessions`, `matches`, `players`, `match_players` — sessions own matches, matches reference players via `match_players` (role = opponent/teammate, with the full stat block per player per match). Players are identified by their `PrimaryId` (e.g. `Steam|123|0`) so duplicates of common display names like `.` are tracked correctly. Each match also records `local_player_id`, the id of *your* player row for that match, which is what makes the per-you analytics possible; matches recorded before that column existed are attributed by name on the next launch after you set your in-game name.
 
 User settings live alongside the DB at `settings.json` (current values: `localUsername`, `commonTeammates`).
 

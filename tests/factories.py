@@ -34,13 +34,21 @@ def player(name: str, primary_id: str, team: int, **stats) -> dict:
 def update_state(guid: str, players: list, *, time_secs=300.0, overtime=False,
                  team_colors=("3f8fff", "ff6a00")) -> dict:
     """Build an UpdateState `Data` payload (already decoded from the outer
-    envelope) with two teams and the given players."""
+    envelope) with two teams and the given players.
+
+    Pass `time_secs=None` to omit `TimeSeconds` entirely, the way a tick that
+    arrives before the clock exists does — that's the only way to produce a NULL
+    `duration_secs`.
+    """
     teams = [
         {"TeamNum": 0, "ColorPrimary": team_colors[0], "Name": "Blue"},
         {"TeamNum": 1, "ColorPrimary": team_colors[1], "Name": "Orange"},
     ]
+    game = {"Teams": teams, "bOvertime": overtime}
+    if time_secs is not None:
+        game["TimeSeconds"] = time_secs
     return {
         "MatchGuid": guid,
         "Players": players,
-        "Game": {"Teams": teams, "TimeSeconds": time_secs, "bOvertime": overtime},
+        "Game": game,
     }

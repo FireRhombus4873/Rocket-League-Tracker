@@ -22,3 +22,4 @@ class UISignals(QObject):
     session_delete_requested = pyqtSignal(int)             # user confirmed deleting a session
     match_delete_requested   = pyqtSignal(int)             # user confirmed deleting one match (match id)
     game_started             = pyqtSignal()                # Rocket League process detected
+    analytics_updated        = pyqtSignal(dict)            # one SessionStore.get_analytics() snapshot

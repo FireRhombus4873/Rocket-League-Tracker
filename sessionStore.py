@@ -15,9 +15,86 @@ PLATFORM_MAP = {
     "switch":    "Switch",
 }
 
+# Analytics tuning. All-time only — the Analytics tab has no scope selector.
+ROLLING_WINDOW     = 5   # sessions in the win-rate rolling average
+MIN_OPPONENT_GAMES = 3   # encounters before an opponent can rank as "toughest"
+MIN_TEAMMATE_GAMES = 2   # matches together before a teammate is listed
+LEADERBOARD_LIMIT  = 8   # rows per leaderboard
+TOD_BUCKET_HOURS   = 4   # time-of-day bucket width -> 6 buckets
+
+WEEKDAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
 def _parse_platform(primary_id: str) -> str:
     prefix = primary_id.split("|")[0].lower()
     return PLATFORM_MAP.get(prefix, prefix.capitalize() or "Unknown")
+
+def _mean(xs) -> float:
+    return (sum(xs) / len(xs)) if xs else 0.0
+
+def _bucket_row(label: str, matches: int, wins: int) -> dict:
+    """One time-of-day / day-of-week bucket, shaped for the bar charts."""
+    return {
+        "label":   label,
+        "matches": matches,
+        "wins":    wins,
+        "losses":  matches - wins,
+        "winPct":  (wins / matches) if matches else 0.0,
+    }
+
+def _tod_label(index: int) -> str:
+    return f"{index * TOD_BUCKET_HOURS:02d}–{(index + 1) * TOD_BUCKET_HOURS:02d}"
+
+def _fold_legacy_player_ids(groups: dict) -> dict:
+    """Merge `legacy:<name>` leaderboard groups into the real PrimaryId group for
+    the same person.
+
+    The one-shot JSON migration gave pre-ID-tracking rows a synthetic
+    `legacy:<name>` id (see _maybe_migrate_from_json), so someone you played
+    before and after that cutover appears twice — once under their real
+    PrimaryId, once under the synthetic one — splitting their record in half.
+    _encounter_for already falls back to a name match for exactly this reason.
+
+    A synthetic group is folded only when *one* real id shares its name and role:
+    display names aren't unique ("." is a real one), so anything ambiguous is left
+    standing on its own rather than guessed at. Keyed by (role, player_id); the
+    surviving key is the real id's.
+    """
+    real_by_name: dict = {}
+    for (role, pid), entry in groups.items():
+        if not pid.startswith("legacy:"):
+            real_by_name.setdefault((role, entry["name"].lower()), []).append(pid)
+
+    folded = {}
+    for (role, pid), entry in groups.items():
+        target = None
+        if pid.startswith("legacy:"):
+            candidates = real_by_name.get((role, entry["name"].lower()), [])
+            if len(candidates) == 1:
+                target = (role, candidates[0])
+        if target is None:
+            folded.setdefault((role, pid), dict(entry))
+            continue
+        into = folded.setdefault(target, dict(groups[target]))
+        into["played"] += entry["played"]
+        into["wins"]   += entry["wins"]
+        into["losses"] += entry["losses"]
+        into["lastDate"] = max(into["lastDate"], entry["lastDate"])
+    return folded
+
+
+def _with_rolling_win_pct(sessions: list) -> list:
+    """Copy each chronological session summary with a match-weighted rolling win
+    rate over the trailing ROLLING_WINDOW sessions.
+
+    Match-weighted, not a mean of percentages — otherwise a single-match session
+    swings the line as hard as a twenty-match one."""
+    out = []
+    for i, s in enumerate(sessions):
+        window = sessions[max(0, i - ROLLING_WINDOW + 1): i + 1]
+        w = sum(x["wins"] for x in window)
+        m = sum(x["matches"] for x in window)
+        out.append({**s, "rollingWinPct": (w / m) if m else 0.0})
+    return out
 
 def _extract_stats(p: dict) -> dict:
     """Map an UpdateState player's PascalCase stat keys to our camelCase shape."""
@@ -44,6 +121,9 @@ class SessionStore():
         self._seen_guid         = None
         self._seen_player_count = 0
         self._local_team        = -1
+        # PrimaryId of the local user, latched from UpdateState alongside
+        # _local_team — the two share a lifecycle so "team known => id known".
+        self._local_player_id   = ""
         self._local_username    = ""
         self.team_info          = {}
         self._match_recorded    = False
@@ -82,6 +162,44 @@ class SessionStore():
     # ------------------------------------------------------------------
     # Session management
     # ------------------------------------------------------------------
+
+    def set_local_username(self, name: str):
+        """Remember the configured display name and attribute historic matches to
+        the local player.
+
+        `matches.local_player_id` (schema v3) is written live by record_result, but
+        every row recorded before v3 — plus anything imported from the legacy JSON
+        — has it NULL. Those are still recoverable: you're always stored as a
+        `role='teammate'` row, so a case-insensitive match on `name_at_match` finds
+        your id.
+
+        Only rows where *exactly one* teammate matches are touched. If a real
+        teammate happened to share your display name that match stays NULL rather
+        than being attributed to the wrong player.
+
+        Idempotent — only NULL rows are considered — so it's safe to call on every
+        launch and after every settings save. Note SQLite's lower() is ASCII-only,
+        so a non-ASCII display name won't backfill; new rows are unaffected, they
+        carry the real PrimaryId."""
+        self._local_username = name or ""
+        if not self._local_username:
+            return
+        lowered = self._local_username.lower()
+        with self._db_lock:
+            self.cursor.execute("""
+                UPDATE matches
+                   SET local_player_id = (
+                           SELECT mp.player_id FROM match_players mp
+                            WHERE mp.match_id = matches.id
+                              AND mp.role     = 'teammate'
+                              AND lower(mp.name_at_match) = ?)
+                 WHERE local_player_id IS NULL
+                   AND (SELECT COUNT(*) FROM match_players mp
+                         WHERE mp.match_id = matches.id
+                           AND mp.role     = 'teammate'
+                           AND lower(mp.name_at_match) = ?) = 1
+            """, (lowered, lowered))
+            self.conn.commit()
 
     def new_session(self):
         self.session_num       += 1
@@ -137,6 +255,7 @@ class SessionStore():
             self._seen_guid         = guid
             self._seen_player_count = 0
             self._local_team        = -1
+            self._local_player_id   = ""
             self.team_info          = {}
             self._player_registry   = {}
             self._match_start_secs  = None
@@ -180,15 +299,18 @@ class SessionStore():
                 **_extract_stats(p),
             }
 
-        # Resolve local team from username
+        # Resolve local team + identity from username
         local_team = self._local_team
+        local_id   = self._local_player_id
         for entry in self._player_registry.values():
             if entry["name"].lower() == local_username.lower():
                 local_team = entry["team"]
+                local_id   = entry["id"]     # PrimaryId — the canonical identity
                 break
 
-        self._local_team     = local_team
-        self._local_username = local_username
+        self._local_team      = local_team
+        self._local_player_id = local_id
+        self._local_username  = local_username
 
         # Derive current_players from the full registry (includes leavers)
         self.set_players(list(self._player_registry.values()), local_team)
@@ -275,8 +397,11 @@ class SessionStore():
                       if p.get("platform") != "Unknown"]
         
         duration = None
-        if self._match_start_secs is not None and self._match_last_secs is not None:
-            duration = max(round(self._match_start_secs - self._match_last_secs, 1), 0)
+        if self._match_overtime:
+            duration = self._match_last_secs
+        else:
+            if self._match_start_secs is not None and self._match_last_secs is not None:
+                duration = max(round(self._match_start_secs - self._match_last_secs, 1), 0)
 
         with self._db_lock:
             # Ensure the session row exists; bump its ended_at to this match.
@@ -287,9 +412,11 @@ class SessionStore():
             """, (self.session_num, played_at, played_at))
 
             self.cursor.execute("""
-                INSERT INTO matches (session_id, played_at, result, winner_team, overtime, duration_secs)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (self.session_num, played_at, result_str, winner_team, self._match_overtime, duration))
+                INSERT INTO matches (session_id, played_at, result, winner_team,
+                                     overtime, duration_secs, local_player_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (self.session_num, played_at, result_str, winner_team,
+                  self._match_overtime, duration, self._local_player_id or None))
             match_id = self.cursor.lastrowid
 
             for role, plist in (("opponent", opponents), ("teammate", teammates)):
@@ -447,7 +574,31 @@ class SessionStore():
                     ALTER TABLE matches ADD COLUMN duration_secs REAL;
                     PRAGMA user_version = 2;
                 """)
+
+            if version < 3:
+                # Per-you analytics need to know which match_players row was you.
+                # ALTER-only (like v2) so fresh and upgraded DBs take one path.
+                # Deliberately plain TEXT with no REFERENCES players(id): a local
+                # player whose PrimaryId is empty gets no `players` row (record_result
+                # filters out platform == "Unknown"), and with foreign_keys = ON an
+                # FK here would reject the whole match rather than just leaving that
+                # one match out of the per-you stats.
+                if not self._column_exists("matches", "local_player_id"):
+                    self.cursor.execute(
+                        "ALTER TABLE matches ADD COLUMN local_player_id TEXT")
+                self.cursor.execute("PRAGMA user_version = 3")
+
             self.conn.commit()
+
+    def _column_exists(self, table: str, column: str) -> bool:
+        """Migrations key off PRAGMA user_version, but a DB touched by a dev build
+        can already have a column while still stamped at the old version. A
+        duplicate ADD COLUMN raises OperationalError, and inside an executescript
+        that aborts the whole migration — which takes __init__, and therefore app
+        startup, down with it. Cheap belt-and-braces."""
+        with self._db_lock:
+            self.cursor.execute(f"PRAGMA table_info({table})")
+            return any(row[1] == column for row in self.cursor.fetchall())
 
     def _maybe_migrate_from_json(self):
         """One-shot import: if a legacy match_history.json exists and the DB has
@@ -721,3 +872,271 @@ class SessionStore():
 
     def session_record(self) -> str:
         return f"{self.wins}W / {self.losses}L"
+
+    # ------------------------------------------------------------------
+    # Analytics aggregation
+    # ------------------------------------------------------------------
+
+    def get_analytics(self) -> dict:
+        """Everything the Analytics tab renders, in one snapshot.
+
+        One public method rather than one per view: the tab is fed by a single
+        `analytics_updated` signal, and holding `_db_lock` across the whole build
+        means the cards, charts and leaderboards can't disagree if a match is
+        recorded mid-refresh. Unlike the other aggregations this does its Python
+        derivation *inside* the lock for that reason — a few ms on a table of at
+        most a few thousand rows, and it only runs at the refresh sites in main.py,
+        never per UpdateState tick.
+
+        Every value is non-None: scalars that could be "unknown" are 0/0.0 with a
+        companion count (e.g. `timedMatches`), absent objects are `{}`. That keeps
+        the Qt slot free of None-guards."""
+        with self._db_lock:
+            from_matches = self._analytics_from_matches()
+            self_stats   = self._analytics_self_stats()
+            leaders      = self._analytics_leaderboards()
+            # get_session_summaries returns newest-first; the trend chart reads
+            # left-to-right in time.
+            sessions     = list(reversed(self.get_session_summaries()))
+
+        return {
+            "overview":         from_matches["overview"],
+            "timeOfDay":        from_matches["timeOfDay"],
+            "dayOfWeek":        from_matches["dayOfWeek"],
+            "winRateBySession": _with_rolling_win_pct(sessions),
+            "rollingWindow":    ROLLING_WINDOW,
+            "selfStats":        self_stats,
+            "opponents":        leaders["opponents"],
+            "teammates":        leaders["teammates"],
+        }
+
+    def _analytics_from_matches(self) -> dict:
+        """Everything derivable from the `matches` table alone: the overview cards,
+        the overtime/duration split, and the time-of-day / day-of-week buckets.
+
+        One ordered scan. Ordered by `id`, not `played_at` — `id` is the true
+        chronological order and is immune to the empty `played_at` that legacy
+        migrated rows can carry. Bucketing is done in Python rather than with
+        strftime() for the same reason: a Python guard is harder to forget than a
+        WHERE clause."""
+        with self._db_lock:
+            self.cursor.execute("""
+                SELECT session_id, played_at, result, overtime, duration_secs
+                FROM matches
+                ORDER BY id ASC
+            """)
+            rows = self.cursor.fetchall()
+
+        wins = losses = 0
+        ot_matches = ot_wins = 0
+        reg_wins = reg_losses = 0
+        dur_all, dur_wins, dur_losses, dur_reg, dur_ot = [], [], [], [], []
+        best_win = worst_loss = cur_win = cur_loss = 0
+        tod = [[0, 0] for _ in range(24 // TOD_BUCKET_HOURS)]   # [matches, wins]
+        dow = [[0, 0] for _ in range(7)]                        # Mon..Sun
+        session_ids = set()
+        dates = []
+
+        for session_id, played_at, result, overtime, duration in rows:
+            won = (result == "win")
+            wins   += won
+            losses += (not won)
+            session_ids.add(session_id)
+
+            if won:
+                cur_win += 1
+                cur_loss = 0
+                best_win = max(best_win, cur_win)
+            else:
+                cur_loss += 1
+                cur_win = 0
+                worst_loss = max(worst_loss, cur_loss)
+
+            # `overtime` is 0 and never NULL for legacy rows — the v2 ALTER carried
+            # DEFAULT 0 — so anything pre-v2 reads as regulation.
+            is_ot = bool(overtime)
+            if is_ot:
+                ot_matches += 1
+                ot_wins    += won
+            else:
+                reg_wins   += won
+                reg_losses += (not won)
+
+            # NULL when Game.TimeSeconds was never seen, and for every legacy row.
+            if duration is not None:
+                dur_all.append(duration)
+                (dur_wins if won else dur_losses).append(duration)
+                (dur_ot if is_ot else dur_reg).append(duration)
+
+            if played_at:
+                dates.append(played_at)
+                try:
+                    when = datetime.fromisoformat(played_at)
+                except ValueError:
+                    continue    # malformed legacy date — counted, but not bucketed
+                bucket = when.hour // TOD_BUCKET_HOURS
+                tod[bucket][0] += 1
+                tod[bucket][1] += won
+                dow[when.weekday()][0] += 1
+                dow[when.weekday()][1] += won
+
+        total   = wins + losses
+        reg_all = reg_wins + reg_losses
+        return {
+            "overview": {
+                "matches":           total,
+                "wins":              wins,
+                "losses":            losses,
+                "winPct":            (wins / total) if total else 0.0,
+                "sessions":          len(session_ids),
+                "bestWinStreak":     best_win,
+                "worstLossStreak":   worst_loss,
+                "firstDate":         min(dates) if dates else "",
+                "lastDate":          max(dates) if dates else "",
+                "timedMatches":      len(dur_all),
+                "avgDurationSecs":   _mean(dur_all),
+                "avgDurationWins":   _mean(dur_wins),
+                "avgDurationLosses": _mean(dur_losses),
+                "avgDurationReg":    _mean(dur_reg),
+                "avgDurationOT":     _mean(dur_ot),
+                "overtimeMatches":   ot_matches,
+                "overtimeWins":      ot_wins,
+                "overtimeLosses":    ot_matches - ot_wins,
+                "overtimeWinPct":    (ot_wins / ot_matches) if ot_matches else 0.0,
+                "overtimeShare":     (ot_matches / total) if total else 0.0,
+                "regulationMatches": reg_all,
+                "regulationWinPct":  (reg_wins / reg_all) if reg_all else 0.0,
+            },
+            "timeOfDay": [_bucket_row(_tod_label(i), m, w)
+                          for i, (m, w) in enumerate(tod)],
+            "dayOfWeek": [_bucket_row(label, m, w)
+                          for label, (m, w) in zip(WEEKDAY_LABELS, dow)],
+        }
+
+    def _analytics_self_stats(self) -> dict:
+        """Per-match averages for the local player, plus your best and worst match
+        by score.
+
+        Driven off `matches.local_player_id` (schema v3), so matches that predate
+        it and couldn't be backfilled are excluded — the returned `matches` is the
+        attributable count, which the UI compares against the all-time total to
+        explain any gap. No `role = 'teammate'` filter is needed: match_players' PK
+        is (match_id, player_id), so the join yields at most one row per match."""
+        with self._db_lock:
+            self.cursor.execute("""
+                SELECT m.id, m.played_at, m.result,
+                       mp.score, mp.goals, mp.shots, mp.assists,
+                       mp.saves, mp.touches, mp.demos
+                FROM matches m
+                JOIN match_players mp
+                  ON mp.match_id  = m.id
+                 AND mp.player_id = m.local_player_id
+                WHERE m.local_player_id IS NOT NULL
+                ORDER BY m.id ASC
+            """)
+            rows = self.cursor.fetchall()
+
+        keys = ("score", "goals", "shots", "assists", "saves", "touches", "demos")
+
+        def averages(subset: list) -> dict:
+            return {k: _mean([r[3 + i] for r in subset]) for i, k in enumerate(keys)}
+
+        def match_dict(row) -> dict:
+            return {
+                "matchId": row[0],
+                "date":    row[1] or "",
+                "result":  row[2],
+                "score":   row[3],
+                "goals":   row[4],
+                "shots":   row[5],
+                "assists": row[6],
+                "saves":   row[7],
+            }
+
+        won  = [r for r in rows if r[2] == "win"]
+        lost = [r for r in rows if r[2] != "win"]
+        shots_total = sum(r[5] for r in rows)
+        goals_total = sum(r[4] for r in rows)
+
+        # Score, tie-broken on goals, then the newest match — the negated id flips
+        # that last tiebreak for min().
+        best  = max(rows, key=lambda r: (r[3], r[4],  r[0])) if rows else None
+        worst = min(rows, key=lambda r: (r[3], r[4], -r[0])) if rows else None
+
+        return {
+            "matches":      len(rows),
+            "avg":          averages(rows),
+            "avgInWins":    averages(won),
+            "avgInLosses":  averages(lost),
+            "shotAccuracy": (goals_total / shots_total) if shots_total else 0.0,
+            "best":         match_dict(best) if best else {},
+            "worst":        match_dict(worst) if worst else {},
+        }
+
+    def _analytics_leaderboards(self) -> dict:
+        """Toughest opponents (lowest win rate against, min MIN_OPPONENT_GAMES) and
+        most-played teammates (min MIN_TEAMMATE_GAMES).
+
+        `wins`/`losses` are YOUR record in those matches, not theirs.
+
+        The WHERE clause exists because the local user IS a `role='teammate'` row
+        in match_players — record_result derives teammates from `current_teammates`,
+        which includes you. Without it you'd top your own most-played-teammates
+        list. Rows recorded before schema v3 (or that the backfill couldn't
+        attribute) have no local_player_id, so those fall back to a name match.
+
+        This is the one aggregation grouped in SQL rather than Python: its raw row
+        count is ~4x the match count while its output is a bounded top-N, and
+        nothing about it is order-dependent (which is why get_session_summaries
+        groups in Python — streaks are).
+
+        The minimum-games thresholds are applied in Python rather than as a HAVING
+        clause, because they have to run *after* _fold_legacy_player_ids: a split
+        identity whose synthetic half has only one match would otherwise be pruned
+        before it could be merged, quietly undercounting that player."""
+        lowered = (self._local_username or "").lower()
+        with self._db_lock:
+            self.cursor.execute("""
+                SELECT mp.role,
+                       mp.player_id,
+                       COALESCE(p.name, mp.name_at_match)                 AS name,
+                       COUNT(*)                                           AS played,
+                       SUM(CASE WHEN m.result = 'win'  THEN 1 ELSE 0 END) AS wins,
+                       SUM(CASE WHEN m.result = 'loss' THEN 1 ELSE 0 END) AS losses,
+                       MAX(m.played_at)                                   AS last_date
+                FROM match_players mp
+                JOIN matches m      ON m.id = mp.match_id
+                LEFT JOIN players p ON p.id = mp.player_id
+                WHERE NOT (mp.role = 'teammate'
+                           AND (mp.player_id = m.local_player_id
+                                OR (m.local_player_id IS NULL
+                                    AND lower(mp.name_at_match) = ?)))
+                GROUP BY mp.role, mp.player_id
+            """, (lowered,))
+            rows = self.cursor.fetchall()
+
+        groups = {}
+        for role, pid, name, played, wins, losses, last_date in rows:
+            groups[(role, pid)] = {
+                "playerId": pid,
+                "name":     name,
+                "played":   played,
+                "wins":     wins,
+                "losses":   losses,
+                "lastDate": last_date or "",
+            }
+        groups = _fold_legacy_player_ids(groups)
+
+        opponents, teammates = [], []
+        for (role, _pid), entry in groups.items():
+            entry["winPct"] = (entry["wins"] / entry["played"]) if entry["played"] else 0.0
+            if role == "opponent" and entry["played"] >= MIN_OPPONENT_GAMES:
+                opponents.append(entry)
+            elif role == "teammate" and entry["played"] >= MIN_TEAMMATE_GAMES:
+                teammates.append(entry)
+
+        # Toughest = worst record against, most-faced breaking ties.
+        opponents.sort(key=lambda r: (r["winPct"], -r["played"], r["name"].lower()))
+        teammates.sort(key=lambda r: (-r["played"], r["winPct"], r["name"].lower()))
+        return {"opponents": opponents[:LEADERBOARD_LIMIT],
+                "teammates": teammates[:LEADERBOARD_LIMIT]}
