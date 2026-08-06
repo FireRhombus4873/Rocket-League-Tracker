@@ -181,11 +181,27 @@ def test_discard_match_writes_nothing(store):
     assert store.result_recorded() is False
 
 
-def test_duration_and_overtime_persisted(store):
+def test_duration_persisted(store):
     store.new_session()
     roster = [player("Me", "Steam|1|0", team=0, goals=2),
               player("R",  "Epic|2|0",  team=1, goals=1)]
     # Clock counts DOWN from 300; overtime latches once seen.
+    store.try_set_players_from_update(update_state("m1", roster, time_secs=300), "Me")
+    store.try_set_players_from_update(
+        update_state("m1", roster, time_secs=250, overtime=False), "Me")
+    store.record_result(winner_team=0)
+
+    duration, overtime = store.cursor.execute(
+        "SELECT duration_secs, overtime FROM matches ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert duration == 50
+    assert overtime == 0
+
+
+def test_overtime_persisted(store):
+    store.new_session()
+    roster = [player("Me", "Steam|1|0", team=0, goals=2),
+              player("R",  "Epic|2|0",  team=1, goals=1)]
     store.try_set_players_from_update(update_state("m1", roster, time_secs=300), "Me")
     store.try_set_players_from_update(
         update_state("m1", roster, time_secs=250, overtime=True), "Me")
@@ -194,7 +210,7 @@ def test_duration_and_overtime_persisted(store):
     duration, overtime = store.cursor.execute(
         "SELECT duration_secs, overtime FROM matches ORDER BY id DESC LIMIT 1"
     ).fetchone()
-    assert duration == 50
+    assert duration == 250
     assert overtime == 1
 
 
