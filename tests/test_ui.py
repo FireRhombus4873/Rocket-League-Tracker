@@ -19,7 +19,11 @@ pytestmark = pytest.mark.ui
 @pytest.fixture
 def window(qtbot):
     from ui import MainWindow
-    w = MainWindow()
+    # close_to_tray=False is what a source run uses, and it matters here:
+    # qtbot closes every registered widget at teardown, so the tray branch of
+    # closeEvent would pop the real "still running in the background" balloon
+    # after each test. This branch takes the tray icon down instead.
+    w = MainWindow(close_to_tray=False)
     qtbot.addWidget(w)
     return w
 
