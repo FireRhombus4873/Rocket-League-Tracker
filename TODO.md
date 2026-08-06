@@ -16,5 +16,7 @@
 - [ ] Highlight in the Past Encounters card when an opponent has a notable record vs you (e.g. lost 3+ in a row, or 0–5 all-time).
 - [ ] Let the user name sessions (label like "Friday duos") instead of just a number. Maybe?
 - [ ] Per-team totals row in `MatchStatsDialog`.
+- [ ] Click on session in "Session" tab to see a list of all the matches in that session.
+- [ ] Per session analytics in the "Analytics" tab.
 
 ## Bugs
