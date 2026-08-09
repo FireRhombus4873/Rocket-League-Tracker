@@ -17,11 +17,21 @@ A desktop application that monitors Rocket League gameplay in real-time, trackin
 
 ## Running
 
-Edit `C:\Program Files\Epic Games\rocketleague\TAGame\Config\DefaultStatsAPI.ini` so that `PacketSendRate=1`
-
 Download the latest release
 
 Run the RocketLeagueTracker.exe
+
+Rocket League's Stats API is off by default. The tracker checks it when the game
+launches and offers to switch it on for you — pick a send rate (1 is plenty) and
+restart Rocket League. If Windows blocks the write, restart the tracker as
+administrator, or edit the file yourself:
+
+```
+<install>\rocketleague\TAGame\Config\DefaultStatsAPI.ini
+
+    [TAGame.MatchStatsExporter_TA]
+    PacketSendRate=1
+```
 
 On first launch, the app prompts you for your in-game name (used to detect which team is yours). You can change it any time via the gear button in the top-right.
 

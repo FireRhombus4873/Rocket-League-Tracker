@@ -14,12 +14,13 @@ import sys
 import threading
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from ui             import MainWindow, SettingsDialog
+from ui             import MainWindow, SettingsDialog, StatsApiDialog
 from settingsManager import SettingsManager
 from eventHandler    import EventHandler, get_winner
-from socketHandler   import SocketHandler
+from socketHandler   import SocketHandler, PORT as STATS_API_PORT
 from processHandler  import ProcessHandler
 from sessionStore    import SessionStore
+import statsApiConfig
 
 LOCAL_USERNAME = None
 COMMON_TEAMMATES = []
@@ -157,12 +158,85 @@ def main():
         session.set_local_username(LOCAL_USERNAME)
         _refresh_analytics(window, session)
 
+    def prompt_stats_api(status: dict):
+        """
+        Tell the user the Stats API is off, and offer to switch it on.
+
+        Runs on the main thread via a signal so it's safe to show a dialog.
+        """
+        if not status.get("configPath"):
+            # No install located, so there's no file we can offer to edit —
+            # all we can do is say where to look.
+            QMessageBox.warning(
+                window,
+                "Stats API Disabled",
+                "The tracker can't reach Rocket League's Stats API, and couldn't "
+                "find your game install to check why.\n\n"
+                "Open this file in your Rocket League install folder:\n"
+                r"    ...\rocketleague\TAGame\Config\DefaultStatsAPI.ini" "\n\n"
+                "and set PacketSendRate=1, then restart Rocket League.",
+            )
+            return
+
+        def write_rate(rate: int):
+            """Returns an error string for the dialog to show inline, or None."""
+            try:
+                statsApiConfig.set_packet_send_rate(status["configPath"], rate)
+            except PermissionError:
+                return ("Windows blocked the write — the game config lives in a "
+                        "protected folder. Close this, restart the tracker as "
+                        "administrator, and try again (or edit the file by hand).")
+            except OSError as exc:
+                return f"Couldn't update the config file: {exc}"
+            return None
+
+        # The socket connects on a fixed port, so a config pointing elsewhere
+        # won't work even at a valid send rate. Say so rather than having the
+        # user set the rate and hit the same wall again.
+        port = status.get("port")
+        note = ""
+        if port is not None and port != STATS_API_PORT:
+            note = (
+                f"Note: this config listens on port {port}, but the tracker connects "
+                f"on {STATS_API_PORT}. Set Port={STATS_API_PORT} in the same file too."
+            )
+
+        dlg = StatsApiDialog(
+            config_path=status["configPath"],
+            min_rate=statsApiConfig.MIN_PACKET_RATE,
+            max_rate=statsApiConfig.MAX_PACKET_RATE,
+            recommended=statsApiConfig.RECOMMENDED_PACKET_RATE,
+            current_rate=status.get("packetSendRate"),
+            note=note,
+            write_callback=write_rate,
+            parent=window,
+        )
+        if dlg.exec() == dlg.DialogCode.Accepted:
+            QMessageBox.information(
+                window,
+                "Restart Rocket League",
+                f"Stats API updated — PacketSendRate is now {dlg.rate()}.\n\n"
+                "Restart Rocket League for the change to take effect. The tracker "
+                "will connect automatically once it's back up.",
+            )
+
     def process_watcher():
         while True:
             window.signals.status_changed.emit("Waiting for Rocket League...")
             process_handler.wait_for_game()
 
             window.signals.game_started.emit()
+
+            # Checked with the game running: statsApiConfig can then read the
+            # install path straight off the live process, which beats guessing
+            # from the Epic/Steam metadata. Emitted after game_started so the
+            # main window is up before the dialog parents to it. Deliberately
+            # does *not* gate socket_handler.start() — the user may fix the
+            # config and relaunch, and the reconnect loop costs nothing.
+            stats_api = statsApiConfig.stats_api_status()
+            if not stats_api["enabled"]:
+                window.signals.stats_api_problem.emit(stats_api)
+
             # Ask on main thread (Qt requires UI calls on main thread).
             # Only auto-prompt for settings on first run — once a username is
             # saved, the user opens the dialog manually via the gear button.
@@ -214,6 +288,7 @@ def main():
     window.signals.new_session_requested.connect(on_new_session_requested)
     window.signals.session_delete_requested.connect(on_session_delete_requested)
     window.signals.match_delete_requested.connect(on_match_delete_requested)
+    window.signals.stats_api_problem.connect(prompt_stats_api)
 
     if _should_show_on_start(sys.argv):
         window.show()
