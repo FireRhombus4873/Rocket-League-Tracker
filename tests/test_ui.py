@@ -129,8 +129,10 @@ def test_analytics_updated_populates_cards_and_leaderboards(window, analytics):
                      "regulationMatches": 2, "regulationWinPct": 1.0,
                      "firstDate": "2026-07-01T10:00:00",
                      "lastDate": "2026-07-02T10:00:00"},
-        "winRateBySession": [{"sessionNum": 1, "matches": 3, "wins": 2, "losses": 1,
-                              "winPct": 2 / 3, "rollingWinPct": 2 / 3}],
+        "scope": {"type": "all", "sessionNum": 0},
+        "trend": [{"sessionNum": 1, "matches": 3, "wins": 2, "losses": 1,
+                   "winPct": 2 / 3, "rollingWinPct": 2 / 3}],
+        "trendMode": "sessions",
         "rollingWindow": 5,
         "selfStats": {"matches": 3, "avg": _stats(), "avgInWins": _stats(score=500.0),
                       "avgInLosses": _stats(score=200.0), "shotAccuracy": 0.5,
@@ -158,6 +160,63 @@ def test_analytics_updated_populates_cards_and_leaderboards(window, analytics):
     # isVisible() is False for every widget regardless of the empty-state toggle.
     assert analytics._analytics_teammates_empty_lbl.isHidden() is False
     assert analytics._analytics_opponents_empty_lbl.isHidden() is True
+    # The all-time-only pair is on screen, and the record card says so.
+    assert analytics._analytics_timing_card.isHidden() is False
+    assert analytics._analytics_leaderboards_row.isHidden() is False
+    assert analytics._analytics_record_card._title_label.text() == "ALL-TIME RECORD"
+    assert analytics._scope_session_btn.isHidden() is True
+
+
+def test_analytics_session_scope_hides_the_all_time_cards(window, analytics):
+    """A session scope drops the two cards that only mean something all-time,
+    and relabels the record card that would otherwise claim to be all-time."""
+    window.signals.analytics_updated.emit({
+        "scope": {"type": "session", "sessionNum": 7},
+        "overview": {"matches": 2, "wins": 1, "losses": 1, "winPct": 0.5,
+                     "sessions": 1},
+        "trend": [{"matchIndex": 1, "xLabel": "1", "result": "win", "wins": 1,
+                   "losses": 0, "winPct": 1.0, "rollingWinPct": 1.0},
+                  {"matchIndex": 2, "xLabel": "2", "result": "loss", "wins": 1,
+                   "losses": 1, "winPct": 0.0, "rollingWinPct": 0.5}],
+        "trendMode": "matches",
+        "selfStats": {"matches": 2, "avg": _stats()},
+    })
+    assert analytics._analytics_timing_card.isHidden() is True
+    assert analytics._analytics_leaderboards_row.isHidden() is True
+    assert analytics._analytics_record_card._title_label.text() == "SESSION RECORD"
+    assert analytics._analytics_record_card._value_label.text() == "1W / 1L"
+    # The third chip only appears while a specific session is being viewed.
+    assert analytics._scope_session_btn.isHidden() is False
+    assert "7" in analytics._scope_session_btn.text()
+
+
+def test_analytics_scope_chip_emits_its_scope(window, analytics, qtbot):
+    """The chips emit and nothing else — the highlight is set from the snapshot
+    that comes back, so it can't claim a view the numbers don't match."""
+    with qtbot.waitSignal(window.signals.analytics_scope_changed) as blocker:
+        analytics._scope_current_btn.click()
+    assert blocker.args == [{"type": "current"}]
+
+
+def test_sessions_view_analytics_emits_the_selected_session(window, sessions, qtbot):
+    """Picking a session to analyse happens on the Sessions tab, which already
+    lists them — this is the signal that carries it over."""
+    window.signals.sessions_updated.emit([
+        {"sessionNum": 2, "firstDate": "2024-01-02", "lastDate": "2024-01-02",
+         "matches": 3, "wins": 2, "losses": 1, "winPct": 2 / 3,
+         "bestWinStreak": 2, "worstLossStreak": 1},
+        {"sessionNum": 1, "firstDate": "2024-01-01", "lastDate": "2024-01-01",
+         "matches": 1, "wins": 0, "losses": 1, "winPct": 0.0,
+         "bestWinStreak": 0, "worstLossStreak": 1},
+    ])
+    assert sessions._session_analytics_btn.isEnabled() is False
+
+    sessions._sessions_table.selectRow(1)
+    assert sessions._session_analytics_btn.isEnabled() is True
+
+    with qtbot.waitSignal(window.signals.analytics_scope_changed) as blocker:
+        sessions._session_analytics_btn.click()
+    assert blocker.args == [{"type": "session", "sessionNum": 1}]
 
 
 def test_analytics_updated_survives_an_empty_payload(window, analytics):

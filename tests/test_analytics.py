@@ -164,7 +164,9 @@ def test_win_rate_by_session_is_chronological_with_rolling_average(store):
     store.new_session()                     # session 3: 1W
     _record(store, "s3a", winner=0)
 
-    points = store.get_analytics()["winRateBySession"]
+    data = store.get_analytics()
+    assert data["trendMode"] == "sessions"
+    points = data["trend"]
     assert [p["sessionNum"] for p in points] == [1, 2, 3]
     assert [p["winPct"] for p in points] == [1.0, 0.0, 1.0]
     # Match-weighted over the trailing window, not a mean of the percentages:
@@ -329,6 +331,139 @@ def test_toughest_opponents_respects_the_minimum_threshold(store):
 
 
 # ---------------------------------------------------------------------------
+# Scope
+# ---------------------------------------------------------------------------
+
+def _two_sessions(store):
+    """Session 1: 2W. Session 2: 1W 2L. Five matches all told."""
+    store.new_session()
+    _record(store, "s1a", winner=0)
+    _record(store, "s1b", winner=0)
+    store.new_session()
+    _record(store, "s2a", winner=0)
+    _record(store, "s2b", winner=1)
+    _record(store, "s2c", winner=1)
+
+
+def test_session_scope_narrows_the_overview_and_self_stats(store):
+    _two_sessions(store)
+
+    data = store.get_analytics({"type": "session", "sessionNum": 1})
+    ov = data["overview"]
+
+    assert data["scope"] == {"type": "session", "sessionNum": 1}
+    assert (ov["matches"], ov["wins"], ov["losses"]) == (2, 2, 0)
+    assert ov["winPct"] == 1.0
+    # selfStats rides the same clause, so it can't disagree with the cards.
+    assert data["selfStats"]["matches"] == 2
+    # ...and the all-time view is untouched by any of it.
+    assert store.get_analytics()["overview"]["matches"] == 5
+
+
+def test_current_scope_resolves_against_the_live_session(store):
+    _two_sessions(store)
+
+    data = store.get_analytics({"type": "current"})
+    assert data["scope"] == {"type": "current", "sessionNum": 2}
+    assert (data["overview"]["matches"], data["overview"]["wins"]) == (3, 1)
+
+
+def test_current_scope_follows_a_new_session(store):
+    """Pinned "session N" must not move; "current" must."""
+    _two_sessions(store)
+    store.new_session()
+    _record(store, "s3a", winner=0)
+
+    assert store.get_analytics({"type": "current"})["scope"]["sessionNum"] == 3
+    pinned = store.get_analytics({"type": "session", "sessionNum": 2})
+    assert pinned["scope"]["sessionNum"] == 2
+    assert pinned["overview"]["matches"] == 3
+
+
+def test_scoped_trend_is_one_point_per_match_with_a_running_win_rate(store):
+    store.new_session()
+    _record(store, "m1", winner=0)      # W
+    _record(store, "m2", winner=1)      # L
+    _record(store, "m3", winner=0)      # W
+
+    data = store.get_analytics({"type": "current"})
+    points = data["trend"]
+
+    assert data["trendMode"] == "matches"
+    assert [p["matchIndex"] for p in points] == [1, 2, 3]
+    assert [p["xLabel"] for p in points] == ["1", "2", "3"]
+    # The faint per-point series is that match's result...
+    assert [p["winPct"] for p in points] == [1.0, 0.0, 1.0]
+    # ...and the accent line is cumulative, not a trailing window.
+    assert [round(p["rollingWinPct"], 3) for p in points] == [1.0, 0.5, 0.667]
+
+
+def test_scoped_trend_counts_the_running_record(store):
+    store.new_session()
+    _record(store, "m1", winner=1)
+    _record(store, "m2", winner=0)
+
+    points = store.get_analytics({"type": "current"})["trend"]
+    assert [(p["wins"], p["losses"]) for p in points] == [(0, 1), (1, 1)]
+
+
+def test_time_of_day_buckets_respect_the_scope(store):
+    store.new_session()
+    _record(store, "s1a", winner=0, when="2026-07-20T09:15:00")     # 08–12
+    store.new_session()
+    _record(store, "s2a", winner=0, when="2026-07-21T22:00:00")     # 20–24
+
+    data = store.get_analytics({"type": "session", "sessionNum": 1})
+    tod = {b["label"]: b["matches"] for b in data["timeOfDay"]}
+    assert tod["08–12"] == 1
+    assert tod["20–24"] == 0
+
+
+def test_leaderboards_are_skipped_under_a_session_scope(store):
+    """An all-time view the tab hides when scoped: MIN_OPPONENT_GAMES /
+    MIN_TEAMMATE_GAMES almost never trigger inside one session, so scoping them
+    would yield two empty tables rather than a narrower answer."""
+    store.new_session()
+    for i in range(3):
+        _record(store, f"m{i}", winner=0)
+
+    assert store.get_analytics()["opponents"]       # 3 encounters, all-time
+    scoped = store.get_analytics({"type": "current"})
+    assert scoped["opponents"] == []
+    assert scoped["teammates"] == []
+
+
+def test_scope_on_a_session_with_no_matches_stays_empty(store):
+    """An emptied (or never-used) session must render empty rather than quietly
+    widening back to all-time."""
+    store.new_session()
+    _record(store, "m1", winner=0)
+
+    data = store.get_analytics({"type": "session", "sessionNum": 99})
+    assert data["scope"] == {"type": "session", "sessionNum": 99}
+    assert data["overview"]["matches"] == 0
+    assert data["trend"] == []
+    assert data["selfStats"]["matches"] == 0
+    # Buckets stay full-length so the charts still have an axis.
+    assert (len(data["timeOfDay"]), len(data["dayOfWeek"])) == (6, 7)
+
+
+def test_unusable_scopes_fall_back_to_all_time(store):
+    """get_analytics runs on the socket thread's refresh chain — a bad scope has
+    to degrade, not raise, or it takes the listener down with it."""
+    store.new_session()
+    _record(store, "m1", winner=0)
+
+    for scope in (None, {}, {"type": "nonsense"}, {"type": "session"},
+                  {"type": "session", "sessionNum": None},
+                  {"type": "session", "sessionNum": "abc"}):
+        data = store.get_analytics(scope)
+        assert data["scope"] == {"type": "all", "sessionNum": 0}
+        assert data["overview"]["matches"] == 1
+        assert data["trendMode"] == "sessions"
+
+
+# ---------------------------------------------------------------------------
 # Empty database
 # ---------------------------------------------------------------------------
 
@@ -345,7 +480,8 @@ def test_get_analytics_on_an_empty_database(store):
     assert data["selfStats"]["matches"] == 0
     assert data["selfStats"]["best"] == {}
     assert data["selfStats"]["avg"]["goals"] == 0.0
-    assert data["winRateBySession"] == []
+    assert data["trend"] == []
+    assert data["scope"] == {"type": "all", "sessionNum": 0}
     assert data["opponents"] == [] and data["teammates"] == []
     # Buckets stay full-length so the charts render an axis with no data.
     assert (len(data["timeOfDay"]), len(data["dayOfWeek"])) == (6, 7)

@@ -37,6 +37,20 @@ FONT_UI   = '"Segoe UI Variable Text", "Segoe UI", "Inter", sans-serif'
 FONT_HEAD = '"Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", sans-serif'
 
 
+def tint(colour: str, alpha: str = "1e") -> str:
+    """A palette colour at partial opacity, for a Qt stylesheet.
+
+    ⚠️ Use this rather than appending the alpha yourself. Qt reads an 8-digit
+    stylesheet hex as **#AARRGGBB**, so the alpha belongs at the *front* — the
+    natural-looking f"{ACCENT2}1e" parses as #4f9dea1e, i.e. a lime #9dea1e at
+    0x4f alpha, not a translucent blue. It renders as a plausible-looking colour,
+    which is exactly why it goes unnoticed.
+
+    `charts.py`'s `_alpha()` is the QColor equivalent for the painted widgets.
+    """
+    return f"#{alpha}{colour.lstrip('#')}"
+
+
 # Applied to the QMainWindow; child dialogs set their own scoped sheets.
 APP_STYLESHEET = f"""
     QMainWindow, QWidget {{

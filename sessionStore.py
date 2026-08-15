@@ -15,12 +15,19 @@ PLATFORM_MAP = {
     "switch":    "Switch",
 }
 
-# Analytics tuning. All-time only — the Analytics tab has no scope selector.
+# Analytics tuning.
 ROLLING_WINDOW     = 5   # sessions in the win-rate rolling average
 MIN_OPPONENT_GAMES = 3   # encounters before an opponent can rank as "toughest"
 MIN_TEAMMATE_GAMES = 2   # matches together before a teammate is listed
 LEADERBOARD_LIMIT  = 8   # rows per leaderboard
 TOD_BUCKET_HOURS   = 4   # time-of-day bucket width -> 6 buckets
+
+# Scope types accepted by get_analytics(). SCOPE_CURRENT is resolved against
+# session_num at query time, so the view follows along when a new session starts;
+# SCOPE_SESSION is pinned to the number it was handed and never moves.
+SCOPE_ALL     = "all"
+SCOPE_CURRENT = "current"
+SCOPE_SESSION = "session"
 
 WEEKDAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -877,7 +884,35 @@ class SessionStore():
     # Analytics aggregation
     # ------------------------------------------------------------------
 
-    def get_analytics(self) -> dict:
+    def _resolve_scope(self, scope: dict) -> tuple:
+        """Normalise a caller's scope dict into `(scope, sql, params)`.
+
+        `sql` is a fragment that always starts with `AND` and always aliases the
+        matches table as `m`, so every query it's spliced into needs a WHERE of
+        its own — the analytics queries carry `WHERE 1=1` where they'd otherwise
+        have none. Keep both conventions in any new scoped query. Nothing from the
+        caller reaches the SQL string itself; the session number is bound.
+
+        A None/unknown scope, or a `session` with an unusable number, degrades to
+        all-time rather than raising. This runs on the socket thread's refresh
+        chain, where a throw would take the listener down with it.
+        """
+        kind = (scope or {}).get("type", SCOPE_ALL)
+        if kind == SCOPE_CURRENT:
+            number = self.session_num
+        elif kind == SCOPE_SESSION:
+            number = (scope or {}).get("sessionNum")
+        else:
+            return {"type": SCOPE_ALL, "sessionNum": 0}, "", ()
+
+        try:
+            number = int(number)
+        except (TypeError, ValueError):
+            return {"type": SCOPE_ALL, "sessionNum": 0}, "", ()
+
+        return {"type": kind, "sessionNum": number}, "AND m.session_id = ?", (number,)
+
+    def get_analytics(self, scope: dict = None) -> dict:
         """Everything the Analytics tab renders, in one snapshot.
 
         One public method rather than one per view: the tab is fed by a single
@@ -888,29 +923,99 @@ class SessionStore():
         most a few thousand rows, and it only runs at the refresh sites in main.py,
         never per UpdateState tick.
 
+        `scope` narrows every figure to one session (see _resolve_scope); omit it
+        for the all-time view. The resolved scope is echoed back under `"scope"`
+        so the tab renders its chips from what was actually queried rather than
+        tracking its own copy.
+
         Every value is non-None: scalars that could be "unknown" are 0/0.0 with a
         companion count (e.g. `timedMatches`), absent objects are `{}`. That keeps
         the Qt slot free of None-guards."""
         with self._db_lock:
-            from_matches = self._analytics_from_matches()
-            self_stats   = self._analytics_self_stats()
-            leaders      = self._analytics_leaderboards()
-            # get_session_summaries returns newest-first; the trend chart reads
-            # left-to-right in time.
-            sessions     = list(reversed(self.get_session_summaries()))
+            scope, where, params = self._resolve_scope(scope)
+            scoped = scope["type"] != SCOPE_ALL
+
+            from_matches = self._analytics_from_matches(where, params)
+            self_stats   = self._analytics_self_stats(where, params)
+
+            # Leaderboards are all-time only, and the tab hides that card under a
+            # session scope: MIN_OPPONENT_GAMES / MIN_TEAMMATE_GAMES almost never
+            # trigger inside a single session, so scoping them would produce two
+            # empty tables rather than a narrower answer. Skipping the query
+            # instead of filtering it keeps its cost off the scoped refresh that
+            # follows every match.
+            leaders = ({"opponents": [], "teammates": []} if scoped
+                       else self._analytics_leaderboards())
+
+            if scoped:
+                # One session is a single point on a per-session trend, which says
+                # nothing — so the same chart is fed per-match progression instead.
+                trend = self._analytics_match_progression(scope["sessionNum"])
+                trend_mode = "matches"
+            else:
+                # get_session_summaries returns newest-first; the trend chart reads
+                # left-to-right in time.
+                trend = _with_rolling_win_pct(
+                    list(reversed(self.get_session_summaries())))
+                trend_mode = "sessions"
 
         return {
-            "overview":         from_matches["overview"],
-            "timeOfDay":        from_matches["timeOfDay"],
-            "dayOfWeek":        from_matches["dayOfWeek"],
-            "winRateBySession": _with_rolling_win_pct(sessions),
-            "rollingWindow":    ROLLING_WINDOW,
-            "selfStats":        self_stats,
-            "opponents":        leaders["opponents"],
-            "teammates":        leaders["teammates"],
+            "scope":         scope,
+            "overview":      from_matches["overview"],
+            "timeOfDay":     from_matches["timeOfDay"],
+            "dayOfWeek":     from_matches["dayOfWeek"],
+            "trend":         trend,
+            "trendMode":     trend_mode,
+            "rollingWindow": ROLLING_WINDOW,
+            "selfStats":     self_stats,
+            "opponents":     leaders["opponents"],
+            "teammates":     leaders["teammates"],
         }
 
-    def _analytics_from_matches(self) -> dict:
+    def _analytics_match_progression(self, session_num: int) -> list:
+        """One point per match in a session, in play order: that match's result as
+        a 0/1 win rate, plus the running win rate after it.
+
+        Shaped for the same WinRateTrendChart the all-time view uses, which draws
+        `winPct` as the faint per-point series and `rollingWinPct` as the accent
+        line — so the spiky W/L sequence sits beneath a smooth cumulative record.
+        Cumulative rather than a trailing window: a session is short enough that
+        "where am I at" beats "how am I trending", and ROLLING_WINDOW is measured
+        in sessions anyway.
+
+        Ordered by `id`, not `played_at`, for the same reason as
+        _analytics_from_matches."""
+        with self._db_lock:
+            self.cursor.execute("""
+                SELECT m.id, m.played_at, m.result
+                FROM matches m
+                WHERE m.session_id = ?
+                ORDER BY m.id ASC
+            """, (session_num,))
+            rows = self.cursor.fetchall()
+
+        points = []
+        wins = losses = 0
+        for index, (match_id, played_at, result) in enumerate(rows, start=1):
+            won = (result == "win")
+            wins   += won
+            losses += (not won)
+            points.append({
+                "matchId":       match_id,
+                "matchIndex":    index,
+                "xLabel":        str(index),
+                "sessionNum":    session_num,
+                "date":          played_at or "",
+                "result":        result,
+                "matches":       index,
+                "wins":          wins,
+                "losses":        losses,
+                "winPct":        1.0 if won else 0.0,
+                "rollingWinPct": wins / index,
+            })
+        return points
+
+    def _analytics_from_matches(self, where: str = "", params: tuple = ()) -> dict:
         """Everything derivable from the `matches` table alone: the overview cards,
         the overtime/duration split, and the time-of-day / day-of-week buckets.
 
@@ -918,13 +1023,18 @@ class SessionStore():
         chronological order and is immune to the empty `played_at` that legacy
         migrated rows can carry. Bucketing is done in Python rather than with
         strftime() for the same reason: a Python guard is harder to forget than a
-        WHERE clause."""
+        WHERE clause.
+
+        `where` / `params` come from _resolve_scope; the `WHERE 1=1` exists so the
+        fragment can always be spliced in as an `AND`."""
         with self._db_lock:
-            self.cursor.execute("""
-                SELECT session_id, played_at, result, overtime, duration_secs
-                FROM matches
-                ORDER BY id ASC
-            """)
+            self.cursor.execute(f"""
+                SELECT m.session_id, m.played_at, m.result, m.overtime,
+                       m.duration_secs
+                FROM matches m
+                WHERE 1=1 {where}
+                ORDER BY m.id ASC
+            """, params)
             rows = self.cursor.fetchall()
 
         wins = losses = 0
@@ -1013,17 +1123,20 @@ class SessionStore():
                           for label, (m, w) in zip(WEEKDAY_LABELS, dow)],
         }
 
-    def _analytics_self_stats(self) -> dict:
+    def _analytics_self_stats(self, where: str = "", params: tuple = ()) -> dict:
         """Per-match averages for the local player, plus your best and worst match
         by score.
 
         Driven off `matches.local_player_id` (schema v3), so matches that predate
         it and couldn't be backfilled are excluded — the returned `matches` is the
-        attributable count, which the UI compares against the all-time total to
+        attributable count, which the UI compares against the scope's total to
         explain any gap. No `role = 'teammate'` filter is needed: match_players' PK
-        is (match_id, player_id), so the join yields at most one row per match."""
+        is (match_id, player_id), so the join yields at most one row per match.
+
+        `where` / `params` come from _resolve_scope and append to the existing
+        WHERE."""
         with self._db_lock:
-            self.cursor.execute("""
+            self.cursor.execute(f"""
                 SELECT m.id, m.played_at, m.result,
                        mp.score, mp.goals, mp.shots, mp.assists,
                        mp.saves, mp.touches, mp.demos
@@ -1031,9 +1144,9 @@ class SessionStore():
                 JOIN match_players mp
                   ON mp.match_id  = m.id
                  AND mp.player_id = m.local_player_id
-                WHERE m.local_player_id IS NOT NULL
+                WHERE m.local_player_id IS NOT NULL {where}
                 ORDER BY m.id ASC
-            """)
+            """, params)
             rows = self.cursor.fetchall()
 
         keys = ("score", "goals", "shots", "assists", "saves", "touches", "demos")
@@ -1078,6 +1191,9 @@ class SessionStore():
         most-played teammates (min MIN_TEAMMATE_GAMES).
 
         `wins`/`losses` are YOUR record in those matches, not theirs.
+
+        Deliberately takes no scope: this is an all-time view and get_analytics
+        skips it entirely under a session scope (see there for why).
 
         The WHERE clause exists because the local user IS a `role='teammate'` row
         in match_players — record_result derives teammates from `current_teammates`,

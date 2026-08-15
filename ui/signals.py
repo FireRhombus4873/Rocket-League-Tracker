@@ -23,4 +23,5 @@ class UISignals(QObject):
     match_delete_requested   = pyqtSignal(int)             # user confirmed deleting one match (match id)
     game_started             = pyqtSignal()                # Rocket League process detected
     analytics_updated        = pyqtSignal(dict)            # one SessionStore.get_analytics() snapshot
+    analytics_scope_changed  = pyqtSignal(dict)            # analytics scope: {"type": "all"|"current"|"session", ...}
     stats_api_problem        = pyqtSignal(dict)            # one statsApiConfig.stats_api_status() snapshot

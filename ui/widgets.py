@@ -79,10 +79,12 @@ def stat_card(label: str, value: str, colour: str, caption: str = "",
     the Tracker tab's values as defaults — the Analytics cards need wider boxes
     and smaller type because "104W / 71L" doesn't fit at 30pt in 158px.
 
-    ⚠️ Cross-module contract: the returned frame carries `_value_label` and
-    `_caption_label` so the tab slots can update the text in place. Every
-    caller that reads `_caption_label` must pass a `caption` — it is None
-    otherwise, and writing to it would raise AttributeError.
+    ⚠️ Cross-module contract: the returned frame carries `_title_label`,
+    `_value_label` and `_caption_label` so the tab slots can update the text in
+    place. Every caller that reads `_caption_label` must pass a `caption` — it is
+    None otherwise, and writing to it would raise AttributeError. `_title_label`
+    is always present; the Analytics tab rewrites it because "ALL-TIME RECORD" is
+    false once the tab is scoped to one session.
     """
     frame = QFrame()
     frame.setObjectName("statCard")
@@ -119,6 +121,7 @@ def stat_card(label: str, value: str, colour: str, caption: str = "",
         layout.addWidget(cap)
 
     # store references to the mutable labels so slots can update them
+    frame._title_label   = lbl
     frame._value_label   = val
     frame._caption_label = cap
     return frame

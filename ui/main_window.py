@@ -70,6 +70,12 @@ class MainWindow(QMainWindow):
         """Public — main.py's MatchEnded handler discards the match when true."""
         return self._tracker_tab.is_tracking_paused()
 
+    def show_analytics_tab(self):
+        """Public — main.py brings this tab forward when a scope is chosen, so
+        picking a session on the Sessions tab lands you on the numbers. A no-op
+        when the request came from the Analytics tab's own scope chips."""
+        self._tabs.setCurrentWidget(self._analytics_tab)
+
     # ------------------------------------------------------------------
     # System tray
     # ------------------------------------------------------------------

@@ -24,6 +24,10 @@ import statsApiConfig
 
 LOCAL_USERNAME = None
 COMMON_TEAMMATES = []
+# What the Analytics tab is scoped to — see SessionStore.get_analytics. Read by
+# _refresh_analytics, which the socket thread calls after every recorded match,
+# so it is always *rebound* and never mutated in place.
+ANALYTICS_SCOPE = {"type": "all"}
 
 def main():
     global LOCAL_USERNAME, COMMON_TEAMMATES
@@ -265,8 +269,22 @@ def main():
             _refresh_sessions(window, session)
             _refresh_analytics(window, session)
 
+    def on_analytics_scope_changed(scope: dict):
+        """Both the Analytics scope chips and the Sessions tab's View Analytics
+        button land here — one path, so the two can't drift."""
+        global ANALYTICS_SCOPE
+        ANALYTICS_SCOPE = dict(scope or {}) or {"type": "all"}
+        _refresh_analytics(window, session)
+        # No-op when the request came from the Analytics tab's own chips.
+        window.show_analytics_tab()
+
     def on_session_delete_requested(num: int):
+        global ANALYTICS_SCOPE
         session.delete_session(num)
+        if ANALYTICS_SCOPE.get("sessionNum") == num:
+            # The scoped session is gone; fall back rather than leaving the tab
+            # pinned to an empty view the user has no obvious way to explain.
+            ANALYTICS_SCOPE = {"type": "all"}
         _refresh_record(window, session)
         _refresh_history(window, session)
         _refresh_sessions(window, session)
@@ -288,6 +306,7 @@ def main():
     window.signals.new_session_requested.connect(on_new_session_requested)
     window.signals.session_delete_requested.connect(on_session_delete_requested)
     window.signals.match_delete_requested.connect(on_match_delete_requested)
+    window.signals.analytics_scope_changed.connect(on_analytics_scope_changed)
     window.signals.stats_api_problem.connect(prompt_stats_api)
 
     if _should_show_on_start(sys.argv):
@@ -344,8 +363,8 @@ def _refresh_sessions(window: MainWindow, session: SessionStore):
 
 def _refresh_analytics(window: MainWindow, session: SessionStore):
     # Goes wherever _refresh_sessions goes, and last: the whole Analytics tab
-    # renders from this one snapshot.
-    window.signals.analytics_updated.emit(session.get_analytics())
+    # renders from this one snapshot, scope chips included.
+    window.signals.analytics_updated.emit(session.get_analytics(ANALYTICS_SCOPE))
 
 
 if __name__ == "__main__":

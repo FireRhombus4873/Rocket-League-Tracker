@@ -60,15 +60,34 @@ class _ChartBase(QWidget):
 
 
 class WinRateTrendChart(_ChartBase):
-    """Per-session win rate with a rolling-average overlay.
+    """A faint per-point win rate with a smoothed accent line over it.
 
-    `set_data(points, rolling_window)` where each point is a
-    `get_analytics()["winRateBySession"]` row, chronological:
+    Two shapes are fed through it, both chronological, both from
+    `get_analytics()["trend"]` — which one depends on the tab's scope:
+
+    - all-time (`trendMode == "sessions"`), one point per session, the accent
+      line being the rolling average:
         {"sessionNum": 7, "matches": 8, "wins": 5, "losses": 3,
          "winPct": 0.625, "rollingWinPct": 0.55}
+    - one session (`trendMode == "matches"`), one point per match, `winPct` being
+      that match's 0/1 result and the accent line the running record:
+        {"matchIndex": 3, "xLabel": "3", "result": "win", "wins": 2, "losses": 1,
+         "winPct": 1.0, "rollingWinPct": 0.667, "tooltip": "Match 3 · WIN…"}
+
+    The series maths is identical for both; only the wording differs, which is
+    why the labels are `set_data` keywords rather than a mode flag. Their
+    defaults reproduce the all-time view, so the caller only speaks up when it
+    has something else to say. A point's `xLabel` overrides the axis text, and a
+    `tooltip` overrides the hover text — consistent with this module formatting
+    nothing itself.
     """
-    HEIGHT = 224
-    PAD_L, PAD_R, PAD_T, PAD_B = 40, 14, 26, 26
+    HEIGHT = 236
+    # PAD_T leaves a clear band above the plot for the legend (drawn LEGEND_DROP
+    # up from the plot top). It has to clear the 100% gridline by more than a dot
+    # radius: in per-match mode every win *is* a 100% point, so a legend sitting
+    # on that line collides with real data on the right-hand side.
+    PAD_L, PAD_R, PAD_T, PAD_B = 40, 14, 38, 26
+    LEGEND_DROP = 26
     DOT_MIN_SPACING = 9      # px between points; below this the dots are dropped
     MAX_X_LABELS = 8
 
@@ -79,11 +98,21 @@ class WinRateTrendChart(_ChartBase):
         self._points = []
         self._window = 5
         self._hover  = -1
+        self._point_legend = "Per session"
+        self._trend_legend = "5-session avg"
+        self._empty_text   = "No sessions recorded yet"
 
-    def set_data(self, points: list, rolling_window: int = 5):
+    def set_data(self, points: list, rolling_window: int = 5, *,
+                 point_legend: str = "Per session",
+                 trend_legend: str = None,
+                 empty_text: str = "No sessions recorded yet"):
         self._points = list(points or [])
         self._window = rolling_window or 5
         self._hover  = -1
+        self._point_legend = point_legend
+        # Defaulted here rather than in the signature so it can name the window.
+        self._trend_legend = trend_legend or f"{self._window}-session avg"
+        self._empty_text   = empty_text
         self.update()
 
     # -- geometry ---------------------------------------------------------
@@ -105,7 +134,7 @@ class WinRateTrendChart(_ChartBase):
     def paintEvent(self, event):
         p = self._open_painter()
         if not self._points:
-            self._draw_empty(p, "No sessions recorded yet")
+            self._draw_empty(p, self._empty_text)
             return
 
         plot = self._plot_rect()
@@ -170,11 +199,11 @@ class WinRateTrendChart(_ChartBase):
     def _draw_legend(self, p: QPainter, plot: QRect):
         p.setFont(QFont("Segoe UI", 8))
         metrics = QFontMetrics(p.font())
-        entries = [(FAINT, "Per session"), (ACCENT2, f"{self._window}-session avg")]
+        entries = [(FAINT, self._point_legend), (ACCENT2, self._trend_legend)]
 
         widths = [12 + 5 + metrics.horizontalAdvance(t) for _, t in entries]
         x = plot.right() - sum(widths) - 14 * (len(entries) - 1)
-        y = self.PAD_T - 14
+        y = self.PAD_T - self.LEGEND_DROP
         for (colour, text), width in zip(entries, widths):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QBrush(QColor(colour)))
@@ -197,7 +226,8 @@ class WinRateTrendChart(_ChartBase):
 
         last_right = -1e9
         for i in wanted:
-            text  = str(self._points[i].get("sessionNum", ""))
+            point = self._points[i]
+            text  = str(point.get("xLabel") or point.get("sessionNum", ""))
             half  = metrics.horizontalAdvance(text) / 2 + 7
             x     = self._x_for(i, plot)
             if x - half < last_right:
@@ -237,12 +267,14 @@ class WinRateTrendChart(_ChartBase):
             self._hover = nearest
             if nearest >= 0:
                 point = self._points[nearest]
-                self.setToolTip(
+                # Per-match points arrive with their own text: "2W 1L · 100%"
+                # would read as that match's record rather than the running one.
+                self.setToolTip(point.get("tooltip") or (
                     f"Session {point.get('sessionNum', '?')} · "
                     f"{point.get('wins', 0)}W {point.get('losses', 0)}L · "
                     f"{point.get('winPct', 0):.0%}\n"
-                    f"{self._window}-session avg {point.get('rollingWinPct', 0):.0%}"
-                )
+                    f"{self._trend_legend} {point.get('rollingWinPct', 0):.0%}"
+                ))
             else:
                 self.setToolTip("")
             self.update()
