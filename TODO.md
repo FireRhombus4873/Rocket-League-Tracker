@@ -5,7 +5,7 @@
 - [x] Allow user to also add common teammates names as a comma seperated list.
 
 ## Data / correctness
-- [ ] Allow editing or deleting a single match (not just whole sessions) from the history table.
+- [x] Allow editing or deleting a single match (not just whole sessions) from the history table.
 - [x] Change history.json to be a database file (use sqlite), for faster retrieval of information, etc.
 - [ ] Export history to CSV.
 
