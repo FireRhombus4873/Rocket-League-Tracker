@@ -1,13 +1,17 @@
 """
-Small reusable UI building blocks shared across the window and dialogs:
-a soft drop-shadow helper, platform-icon lookup, the elevated Card frame,
-and the cursor event filter used by clickable table name columns.
+Small reusable UI building blocks shared across the window, the tabs and the
+dialogs: a soft drop-shadow helper, platform-icon lookup, the elevated Card
+frame, the stat-card / table / placeholder factories, and the cursor event
+filter used by clickable table name columns.
 """
-from PyQt6.QtWidgets import QFrame, QVBoxLayout, QLabel, QGraphicsDropShadowEffect
+from PyQt6.QtWidgets import (
+    QFrame, QVBoxLayout, QLabel, QGraphicsDropShadowEffect,
+    QWidget, QTableWidget, QHeaderView,
+)
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtCore import QObject, Qt
 
-from .theme import BG_CARD, BORDER_SOFT, SUBTEXT
+from .theme import BG_ALT, BG_CARD, BORDER_SOFT, FAINT, SUBTEXT
 
 
 def soft_shadow(widget, *, blur=28, y_offset=6, alpha=90):
@@ -64,6 +68,102 @@ class Card(QFrame):
         self.content_layout = QVBoxLayout()
         self.content_layout.setSpacing(8)
         layout.addLayout(self.content_layout)
+
+
+# --------------------------------------------------------------------------
+# Factories shared by the tab modules
+# --------------------------------------------------------------------------
+def stat_card(label: str, value: str, colour: str, caption: str = "",
+              *, value_pt: int = 30, width: int = 158) -> QFrame:
+    """A small elevated number card. `value_pt` / `width` are keyword-only with
+    the Tracker tab's values as defaults — the Analytics cards need wider boxes
+    and smaller type because "104W / 71L" doesn't fit at 30pt in 158px.
+
+    ⚠️ Cross-module contract: the returned frame carries `_value_label` and
+    `_caption_label` so the tab slots can update the text in place. Every
+    caller that reads `_caption_label` must pass a `caption` — it is None
+    otherwise, and writing to it would raise AttributeError.
+    """
+    frame = QFrame()
+    frame.setObjectName("statCard")
+    frame.setFixedSize(width, 104)
+    frame.setStyleSheet(f"""
+        QFrame#statCard {{
+            background-color: {BG_CARD};
+            border: 1px solid {BORDER_SOFT};
+            border-radius: 12px;
+        }}
+    """)
+    soft_shadow(frame, blur=22, y_offset=5, alpha=55)
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(18, 14, 18, 14)
+    layout.setSpacing(0)
+
+    lbl = QLabel(label)
+    lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+    lbl.setStyleSheet(f"color: {SUBTEXT}; letter-spacing: 1.3px;")
+    layout.addWidget(lbl)
+
+    layout.addStretch()
+
+    val = QLabel(value)
+    val.setFont(QFont("Segoe UI", value_pt, QFont.Weight.DemiBold))
+    val.setStyleSheet(f"color: {colour};")
+    layout.addWidget(val)
+
+    cap = None
+    if caption:
+        cap = QLabel(caption)
+        cap.setFont(QFont("Segoe UI", 8))
+        cap.setStyleSheet(f"color: {FAINT}; letter-spacing: 0.3px;")
+        layout.addWidget(cap)
+
+    # store references to the mutable labels so slots can update them
+    frame._value_label   = val
+    frame._caption_label = cap
+    return frame
+
+
+def make_table(headers: list) -> QTableWidget:
+    t = QTableWidget(0, len(headers))
+    t.setHorizontalHeaderLabels(headers)
+    t.horizontalHeader().setStretchLastSection(True)
+    t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+    t.horizontalHeader().setHighlightSections(False)
+    t.verticalHeader().setVisible(False)
+    t.verticalHeader().setDefaultSectionSize(40)
+    t.setShowGrid(False)
+    t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+    t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+    t.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+    t.setAlternatingRowColors(True)
+    t.setStyleSheet(t.styleSheet() + f"""
+        QTableWidget {{ alternate-background-color: {BG_ALT}; }}
+    """)
+    return t
+
+
+def make_placeholder(text: str, sub: str = "") -> QWidget:
+    """A centred, muted idle/empty state for the live-match panels."""
+    w = QWidget()
+    w.setStyleSheet("background: transparent;")
+    lay = QVBoxLayout(w)
+    lay.setContentsMargins(0, 24, 0, 24)
+    lay.setSpacing(6)
+    lay.addStretch()
+    lbl = QLabel(text)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lbl.setFont(QFont("Segoe UI", 12))
+    lbl.setStyleSheet(f"color: {SUBTEXT}; background: transparent;")
+    lay.addWidget(lbl)
+    if sub:
+        s = QLabel(sub)
+        s.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        s.setFont(QFont("Segoe UI", 9))
+        s.setStyleSheet(f"color: {FAINT}; background: transparent;")
+        lay.addWidget(s)
+    lay.addStretch()
+    return w
 
 
 # --------------------------------------------------------------------------

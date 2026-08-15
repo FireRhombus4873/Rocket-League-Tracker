@@ -3,13 +3,16 @@ Tier 2 — the small platform-string parsers that the UI and persistence rely on
 
 `_parse_platform` turns a PrimaryId prefix into our display platform; the
 `tracker_platform_slug` (lifted out of the dialog) maps that to the URL slug used
-for tracker.network profile links. Importing the dialog module pulls in PyQt, but
-only at import time — no widget is constructed, so this stays a pure-logic tier.
+for tracker.network profile links. `_fmt_mmss` / `_fmt_pct` are the Analytics
+tab's two display formatters — module-scope so they're reachable here. Importing
+these modules pulls in PyQt, but only at import time — no widget is constructed,
+so this stays a pure-logic tier.
 """
 import pytest
 
 from sessionStore import _parse_platform
 from ui.dialogs.match_stats_dialog import tracker_platform_slug
+from ui.tabs.analytics_tab import _fmt_mmss, _fmt_pct
 
 
 @pytest.mark.parametrize("primary_id, expected", [
@@ -41,3 +44,25 @@ def test_parse_platform(primary_id, expected):
 ])
 def test_tracker_platform_slug(platform, slug):
     assert tracker_platform_slug(platform) == slug
+
+
+@pytest.mark.parametrize("seconds, expected", [
+    (292.4, "4:52"),    # rounds to the nearest second, then m:ss
+    (60.0,  "1:00"),
+    (5.0,   "0:05"),    # under a minute still gets the leading 0:
+    (0,     "—"),       # nothing was timed
+    (None,  "—"),       # NULL duration_secs from a pre-v2 row
+    (-3.0,  "—"),       # a negative clock delta is nonsense, not a duration
+])
+def test_fmt_mmss(seconds, expected):
+    assert _fmt_mmss(seconds) == expected
+
+
+@pytest.mark.parametrize("value, total, expected", [
+    (0.667, 3, "67%"),
+    (1.0,   4, "100%"),
+    (0.0,   4, "0%"),   # a real 0% is not the same as "no data"
+    (0.0,   0, "—"),    # nothing to divide
+])
+def test_fmt_pct(value, total, expected):
+    assert _fmt_pct(value, total) == expected
