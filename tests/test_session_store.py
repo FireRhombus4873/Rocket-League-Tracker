@@ -92,6 +92,21 @@ def test_match_with_no_points_is_not_recorded(store):
     assert store.get_session_summaries() == []
 
 
+def test_match_playlist_id_is_recorded(store):
+    store.new_session()
+    store.try_set_players_from_update(update_state("m1", [
+        player("Me", "Steam|1|0", team=0, goals=3),
+        player("Rival", "Epic|2|0", team=1, goals=1),
+    ], playlist_id=10), local_username="Me")
+    store.record_result(winner_team=0)
+
+    playlist_id = store.cursor.execute(
+        "SELECT playlistID FROM matches ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0]
+
+    assert playlist_id == 10
+
+
 # ---------------------------------------------------------------------------
 # The "should I refresh the UI?" contract of try_set_players_from_update
 # ---------------------------------------------------------------------------

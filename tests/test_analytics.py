@@ -56,8 +56,8 @@ def _local_ids(store):
 # Schema v3 + local-player attribution
 # ---------------------------------------------------------------------------
 
-def test_schema_is_v3_with_local_player_id(store):
-    assert store.cursor.execute("PRAGMA user_version").fetchone()[0] == 3
+def test_schema_is_v4_with_local_player_id(store):
+    assert store.cursor.execute("PRAGMA user_version").fetchone()[0] == 4
     cols = [r[1] for r in store.cursor.execute("PRAGMA table_info(matches)").fetchall()]
     assert "local_player_id" in cols
 

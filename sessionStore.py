@@ -269,6 +269,7 @@ class SessionStore():
             self._match_last_secs   = None
             self._match_overtime    = False
             self._match_recorded    = False
+            self._playlist_id       = None
 
         # Extract team colours/names
         game = data.get("Game", {})
@@ -318,6 +319,8 @@ class SessionStore():
         self._local_team      = local_team
         self._local_player_id = local_id
         self._local_username  = local_username
+
+        self._playlist_id = game.get("PlaylistId", 0)
 
         # Derive current_players from the full registry (includes leavers)
         self.set_players(list(self._player_registry.values()), local_team)
@@ -420,10 +423,10 @@ class SessionStore():
 
             self.cursor.execute("""
                 INSERT INTO matches (session_id, played_at, result, winner_team,
-                                     overtime, duration_secs, local_player_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                     overtime, duration_secs, local_player_id, playlistID)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (self.session_num, played_at, result_str, winner_team,
-                  self._match_overtime, duration, self._local_player_id or None))
+                  self._match_overtime, duration, self._local_player_id or None, self._playlist_id or None))
             match_id = self.cursor.lastrowid
 
             for role, plist in (("opponent", opponents), ("teammate", teammates)):
@@ -475,6 +478,7 @@ class SessionStore():
         self._match_last_secs   = None
         self._match_overtime    = False
         self._match_recorded    = True
+        self._playlist_id       = None
 
     def result_recorded(self):
         """Return True when the current match has already been recorded."""
@@ -515,6 +519,7 @@ class SessionStore():
         self._match_last_secs       = None
         self._match_overtime        = False
         self._match_recorded        = False
+        self._playlist_id           = None
 
     # ------------------------------------------------------------------
     # Persistence
@@ -594,6 +599,12 @@ class SessionStore():
                     self.cursor.execute(
                         "ALTER TABLE matches ADD COLUMN local_player_id TEXT")
                 self.cursor.execute("PRAGMA user_version = 3")
+
+            if version < 4: 
+                if not self._column_exists("matches", "playlistID"):
+                    self.cursor.execute(
+                        "ALTER TABLE matches ADD COLUMN playlistID INTEGER")
+                self.cursor.execute("PRAGMA user_version = 4")
 
             self.conn.commit()
 

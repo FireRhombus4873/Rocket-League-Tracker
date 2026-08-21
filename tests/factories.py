@@ -31,7 +31,7 @@ def player(name: str, primary_id: str, team: int, **stats) -> dict:
     return entry
 
 
-def update_state(guid: str, players: list, *, time_secs=300.0, overtime=False,
+def update_state(guid: str, players: list, *, time_secs=300.0, overtime=False, playlist_id=None,
                  team_colors=("3f8fff", "ff6a00")) -> dict:
     """Build an UpdateState `Data` payload (already decoded from the outer
     envelope) with two teams and the given players.
@@ -47,6 +47,8 @@ def update_state(guid: str, players: list, *, time_secs=300.0, overtime=False,
     game = {"Teams": teams, "bOvertime": overtime}
     if time_secs is not None:
         game["TimeSeconds"] = time_secs
+    if playlist_id is not None:
+        game["PlaylistId"] = playlist_id
     return {
         "MatchGuid": guid,
         "Players": players,
